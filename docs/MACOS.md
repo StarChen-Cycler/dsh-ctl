@@ -110,6 +110,59 @@ dsh plugin --profile fleet add link:"$HOME/dsh-plugins/dsh-ctl"
 sh scripts/fleet-run.sh
 ```
 
+## Making `dsh` usable from an interactive shell
+
+Two things make a naive `export PATH=...pnpm-global/bin:$PATH` a trap:
+
+- **Node version.** The login shell here resolved `node` to nvm's default `v20`,
+  and `dsh` 0.2.1-rc.5 **exits silently with no output** on v20 — it does not even
+  print an error. A Node ≥ 22 is required.
+- **Scope.** Prepending a Node to the global `PATH` changes `node` for every other
+  project on the machine.
+
+So use [`scripts/dsh-wrapper.sh`](../scripts/dsh-wrapper.sh) instead. Install it as
+`~/.local/bin/dsh` (a directory most setups already have on `PATH`) and it picks a
+suitable Node just for this one command:
+
+```sh
+install -m 755 scripts/dsh-wrapper.sh ~/.local/bin/dsh
+zsh -lic 'command -v dsh; dsh --version'      # -> ~/.local/bin/dsh, 0.2.1-rc.5
+```
+
+Verify a build actually **boots**, not just that `--version` prints — `--version`
+never loads the native addon, so it passes on configurations that fail at boot.
+
+## Migrating plugins from the desktop profile
+
+The desktop app's plugins live in `$DSH_HOME/profiles/desktop/package.json` and are
+**not** shared with other profiles. Re-declare them per profile:
+
+```sh
+dsh plugin --profile fleet add "link:$HOME/dsh-plugins/dsh-feishu-steer"
+dsh plugin --profile fleet add "link:$HOME/dsh-plugins/dsh-mcp-chrome-devtools"
+dsh plugin --profile fleet add "link:$HOME/dsh-plugins/dsh-mcp-context7-codegraph"
+dsh plugin --profile fleet add "octie-cli@^1.3.2"
+```
+
+Each `add` appends to `dsh.profile.bundles` as well as `dependencies`, so no manual
+`package.json` editing is needed:
+
+```json
+"bundles": [
+  "@deepseek-ai/dsh-base",
+  "@deepseek-ai/dsh-web-app",
+  "dsh-ctl",
+  "dsh-feishu-steer",
+  "@local/dsh-mcp-chrome-devtools",
+  "@local/dsh-mcp-context7-codegraph",
+  "octie-cli"
+]
+```
+
+A successful boot logs the MCP servers starting (`Context7 Documentation MCP Server
+… running on stdio`, `Starting CodeGraph MCP server`, the `chrome-devtools-mcp`
+banner). If one of those is absent from `dsh-fleet.log`, that plugin did not mount.
+
 ## Keeping it running with launchd
 
 ```xml
