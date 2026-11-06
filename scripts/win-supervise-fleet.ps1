@@ -42,6 +42,8 @@ while ($true) {
     Write-Log 'starting fleet-run.ps1'
     $started = Get-Date
     try {
+        # -WorkingDirectory matters: dsh refuses to boot from a directory whose
+        # .env sets DEEPSEEK_BASE_URL, so never inherit an arbitrary cwd here.
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher *>> $log
         $code = $LASTEXITCODE
     } catch {

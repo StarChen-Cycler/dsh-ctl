@@ -166,6 +166,53 @@ Watch the supervisor's restart lines in `%USERPROFILE%\dsh-fleet.log`:
 2026-11-06T14:31:45 [supervisor] restarting
 ```
 
+## 7. Pin the working directory in the launcher
+
+`dsh` treats the **invoking directory** as the workspace root, and it refuses to
+boot when that directory has a `.env` setting `DEEPSEEK_BASE_URL`:
+
+```
+Error: .env sets "DEEPSEEK_BASE_URL", which only the launching environment may set
+```
+
+A launcher started from a hidden window, a scheduled task, or another repository
+inherits *that* directory. `fleet-run.ps1` therefore does `Set-Location $HOME`
+before exec'ing dsh. Without it the server crash-loops with a stack trace pointing
+at `dsh-app-boot/lib/index.js` and no useful message.
+
+## 8. Autostart can be blocked outright
+
+Two independent gates on a locked-down Windows box:
+
+| attempt | result |
+|---|---|
+| `Register-ScheduledTask` (per-user, no elevation) | `Access is denied` (0x80070005) — tasks live in `%SystemRoot%\System32\Tasks`, which needs elevation |
+| writing a `.vbs` / `.cmd` / `.ps1` into the Startup folder | `Access is denied`, while a `.txt` in the same folder succeeds |
+
+The second one is not an ACL problem — the user has `FullControl` on the folder —
+so it is an endpoint-protection rule blocking script files in an autostart
+location. There is no supported way around it from an unelevated shell.
+
+`win-install-scheduledtask.ps1` handles both: it registers the task when possible,
+otherwise falls back to the Startup folder, and reports clearly if both are denied.
+When that happens, either run it once from an **elevated** shell, or accept
+launching by hand after a reboot.
+
+## 9. Several dsh versions on one machine
+
+Keep the profile's CLI explicit. `fleet-run.ps1` resolves in this order:
+
+1. `$env:DSH_BIN` — an explicit path
+2. `%USERPROFILE%\.dsh\cli\dsh.cmd` — per-user install convention
+3. `dsh` on `PATH`
+
+Step 2 exists because a launcher started by Windows cannot inherit `DSH_BIN`, and
+`PATH` often still points at an older CLI. If you install with
+`npm install -g --prefix %USERPROFILE%\.dsh\cli`, note that npm nests the whole
+dependency tree under the package, so the usable entry point is
+`.dsh\cli\node_modules\@deepseek-ai\dsh\lib\bin.js` and a small `dsh.cmd` shim is
+worth writing next to it.
+
 ## macOS vs Windows at a glance
 
 | | macOS | Windows |

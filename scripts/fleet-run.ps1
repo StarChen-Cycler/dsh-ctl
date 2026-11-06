@@ -58,15 +58,38 @@ if ($env:DSH_NODE_PATH) {
     $env:NODE_PATH = if ($env:NODE_PATH) { "$env:DSH_NODE_PATH;$env:NODE_PATH" } else { $env:DSH_NODE_PATH }
 }
 
-$dsh = Get-Command dsh -ErrorAction SilentlyContinue
-if (-not $dsh) {
-    throw "dsh: the dsh CLI is not on PATH. Install it with: npm install -g @deepseek-ai/dsh@0.2.1-rc.5"
+$dshPath = if ($env:DSH_BIN) {
+    # Explicit CLI path. Needed when several dsh versions are installed and the
+    # one on PATH is not the one this profile was built for.
+    if (-not (Test-Path $env:DSH_BIN)) {
+        throw "dsh: DSH_BIN points at a missing file: $($env:DSH_BIN)"
+    }
+    (Get-Item $env:DSH_BIN).FullName
+} elseif (Test-Path (Join-Path $HOME '.dsh\cli\dsh.cmd')) {
+    # Per-user CLI install convention. Checked before PATH because a scheduled
+    # task or logon launcher cannot inherit DSH_BIN, and PATH may still hold an
+    # older dsh from a different install method.
+    (Get-Item (Join-Path $HOME '.dsh\cli\dsh.cmd')).FullName
+} else {
+    $cmd = Get-Command dsh -ErrorAction SilentlyContinue
+    if ($cmd) { $cmd.Source } else { $null }
+}
+
+if (-not $dshPath) {
+    throw 'dsh: the dsh CLI is not on PATH. Install it with: npm install -g @deepseek-ai/dsh@0.2.1-rc.5'
 }
 
 Write-Host "node: $rawVersion  ($($node.Source))"
-Write-Host "dsh:  $($dsh.Source)"
+Write-Host "dsh:  $dshPath"
 Write-Host "port: $Port   profile: $Profile"
 
+# dsh treats the invoking directory as the workspace root, and refuses to boot if
+# that directory holds a .env setting DEEPSEEK_BASE_URL ("only the launching
+# environment may set ..."). A launcher started from an arbitrary directory —
+# a scheduled task, a hidden window, another repo — must not inherit it. Pin a
+# neutral working directory.
+Set-Location $HOME
+
 # --- 4. run ----------------------------------------------------------------
-& dsh $Profile --port $Port --no-open
+& $dshPath $Profile --port $Port --no-open
 exit $LASTEXITCODE
