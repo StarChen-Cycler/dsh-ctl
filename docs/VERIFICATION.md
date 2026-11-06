@@ -254,6 +254,90 @@ never hardcodes a single field name.
 
 ---
 
+## 11. Third deployment: Windows 10 22H2, DSH 0.2.1-rc.5
+
+Clean Windows 10 (build 19045), PowerShell 5.1, Node v24.22.1, npm 11.19.1, no
+prior dsh CLI. Installed with npm:
+
+```
+npm install -g pnpm @deepseek-ai/dsh@0.2.1-rc.5
+dsh --version  ->  0.2.1-rc.5
+```
+
+### 11.1 No NODE_PATH workaround was needed
+
+The macOS deployment requires a `NODE_PATH` shim because pnpm's isolated global
+layout hides the platform native package. npm's global layout is flat, so on
+Windows the addon resolved with no shim at all — the server booted on the first
+attempt with only `fleet-run.ps1`.
+
+### 11.2 The existing session store is visible
+
+`GET /ctl/sessions` returned the 11 sessions already on the machine, with their
+titles and workspace paths:
+
+```
+total=11 running=0
+  session-…  [idle]  Amazon COO        D:\Backup\Documents\deepseek-harness\default-workspace
+  session-…  [idle]  Amazon Ads        …
+  session-…  [idle]  Amazon Listing    …
+  session-…  [idle]  Amazon finance    …
+  session-…  [idle]  Amazon health     …
+  session-…  [idle]  Amazon promotion  …
+```
+
+### 11.3 A process started over SSH does not survive the session
+
+This is the Windows-specific finding, and it is not obvious from the macOS
+experience:
+
+```
+starting: ...\fleet-run.ps1
+launcher pid=5376
+listening after 3s
+{"ok":true,...,"pid":8552,...}      <- healthy while the SSH session is open
+# ssh session closes
+no response from http://127.0.0.1:17390/ctl/health
+```
+
+`Start-Process -WindowStyle Hidden` does not help: Windows OpenSSH tears down the
+session's process tree. Persistence has to go through Task Scheduler.
+
+### 11.4 Task Scheduler + supervisor loop works
+
+`win-install-scheduledtask.ps1` registered task `DSH-Fleet` and started it:
+
+```
+State : Running
+health: {"ok":true,...,"pid":13236,"platform":"win32","node":"v24.22.1"}
+```
+
+Then both behaviours were tested from a **fresh** SSH session:
+
+| test | result |
+|---|---|
+| survived the session that started it | ✅ pid 13236 still serving, uptime 14 s |
+| crash recovery (`taskkill /IM node.exe /F`) | ✅ new pid 11540 within ~10 s |
+
+### 11.5 A logon trigger still needs a login
+
+```
+AutoAdminLogon = 0
+```
+
+Unlike the macOS target (auto-login on), this machine does not sign itself in. An
+at-logon task therefore will **not** start after an unattended reboot until someone
+logs in. Documented rather than papered over; see
+[docs/WINDOWS.md](WINDOWS.md) for the alternatives.
+
+### 11.6 Quoting: a cmd remote shell mangles URLs
+
+`ssh host 'curl -s http://127.0.0.1:17390/ctl/sessions?limit=5'` returns nothing —
+no error, empty output — because `cmd.exe` consumes the `?`. Every probe was moved
+into `win-verify-fleet.ps1`, which is why that script exists.
+
+---
+
 ## Known unverified
 
 - **Queue placement on 0.2.1-rc.5.** Accepted but not observable: the host no longer

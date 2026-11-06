@@ -224,10 +224,15 @@ key paths on your build instead of guessing. That is how the paths above were fo
 
 ## Compatibility
 
-| DSH version | Status |
-|---|---|
-| `0.1.5-rc.2` | verified — every endpoint exercised against a live host (see [docs/VERIFICATION.md](docs/VERIFICATION.md)) |
-| `0.2.1-rc.5` | target for the second deployment; re-run `/ctl/debug/shape` after upgrading |
+| DSH version | Platform | Status |
+|---|---|---|
+| `0.1.5-rc.2` | Windows 10/11 | verified — every endpoint exercised against a live host (see [docs/VERIFICATION.md](docs/VERIFICATION.md)) |
+| `0.2.1-rc.5` | macOS arm64 | verified — sessions, create, prompt, inspect, tail |
+| `0.2.1-rc.5` | Windows 10 22H2 | verified — sessions, control plane, scheduled-task persistence |
+
+That table is the **DSH** version, not the plugin's own version (`0.1.0`). After any
+DSH upgrade, re-run `/ctl/debug/shape` and `/ctl/control?raw=1` before trusting a
+field.
 
 ## Limitations
 
@@ -243,14 +248,47 @@ key paths on your build instead of guessing. That is how the paths above were fo
   waits up to `ms` for new frames, then closes. It is not a persistent subscription.
 - Session deletion and forking are not exposed.
 - The plugin does not manage MCP servers or other plugins; it only controls sessions.
+- Sessions owned by subagent routing cannot be prompted; `POST /ctl/prompt` rejects
+  them with `is owned by subagent routing`. Target root sessions.
 
 ## Platform notes
 
-- **macOS** has three deployment traps of its own (a `pnpm` shim, the vendor
-  runtime's hardened signature refusing the npm native addon, and the addon loader
-  not seeing a pnpm-global platform package). See [docs/MACOS.md](docs/MACOS.md).
-  Ready-made helpers live in [`scripts/`](scripts/): `pnpm-shim.sh`,
-  `mac-link-native-binding.sh`, `fleet-run.sh`, `mac-start-fleet.sh`.
+Both platforms need the same two things — a Node >= 22 and a running `dsh web` — but
+the wiring differs, so each has its own launcher and persistence installer.
+
+| | macOS | Windows |
+|---|---|---|
+| Foreground launcher | [`fleet-run.sh`](scripts/fleet-run.sh) | [`fleet-run.ps1`](scripts/fleet-run.ps1) |
+| Detached smoke test | [`mac-start-fleet.sh`](scripts/mac-start-fleet.sh) | [`win-start-fleet.ps1`](scripts/win-start-fleet.ps1) |
+| Persistence | [`mac-install-launchd.sh`](scripts/mac-install-launchd.sh) (LaunchAgent) | [`win-install-scheduledtask.ps1`](scripts/win-install-scheduledtask.ps1) + [`win-supervise-fleet.ps1`](scripts/win-supervise-fleet.ps1) |
+| Keep-alive | built in (`KeepAlive`) | supplied by the supervisor loop |
+| Verify | `curl` against loopback | [`win-verify-fleet.ps1`](scripts/win-verify-fleet.ps1) |
+| Guide | [docs/MACOS.md](docs/MACOS.md) | [docs/WINDOWS.md](docs/WINDOWS.md) |
+
+### macOS specifics
+
+Three deployment traps, all covered in [docs/MACOS.md](docs/MACOS.md):
+
+1. `dsh plugin` needs an executable literally named `pnpm` — see
+   [`pnpm-shim.sh`](scripts/pnpm-shim.sh).
+2. The vendor-bundled Node is hardened-runtime signed and refuses npm's
+   ad-hoc-signed native addon (`different Team IDs`). Use a normal Node.
+3. A pnpm-global install hides the platform package behind symlink realpaths —
+   [`mac-link-native-binding.sh`](scripts/mac-link-native-binding.sh) builds a
+   `NODE_PATH` shim.
+
+### Windows specifics
+
+1. **A process started over SSH dies when that session closes.** Task Scheduler,
+   not `nohup`, is the answer. This is the one Windows behaviour that catches
+   everyone.
+2. Task Scheduler has no `KeepAlive`; the supervisor loop supplies it.
+3. Install with **npm**, not pnpm: the flat global layout removes the need for the
+   `NODE_PATH` shim entirely.
+4. The remote shell is `cmd.exe`, which eats `?` and `&` in URLs — always drive the
+   control plane from a script, never an inline `curl`.
+
+Details: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ## Enabling SSH on the target
 
