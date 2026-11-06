@@ -383,10 +383,12 @@ export function apply(ctx, config = {}) {
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), ms)
     let baseline = null
+    let rawFrame = null
     try {
       for await (const frame of controller.control(abort.signal)) {
         if (frame?.type === 'baseline') {
           baseline = frame.value
+          rawFrame = frame
           break
         }
       }
@@ -397,7 +399,80 @@ export function apply(ctx, config = {}) {
     }
 
     if (baseline === null) return send(res, 200, { ok: true, sessions: {}, note: 'no baseline within timeout' })
-    if (raw) return send(res, 200, { ok: true, shape: walk(baseline) })
+    if (raw) {
+      const own = baseline && typeof baseline === 'object' ? Object.getOwnPropertyNames(baseline) : []
+      let proto = []
+      try {
+        proto = baseline ? Object.getOwnPropertyNames(Object.getPrototypeOf(baseline) ?? {}) : []
+      } catch {
+        proto = []
+      }
+      const describeValue = (v) => {
+        if (v === null || v === undefined) return { ctor: String(v), isMap: false, isArray: false, ownKeys: [], size: null }
+        const ctor = v?.constructor?.name ?? 'null-proto'
+        const isMap = v instanceof Map
+        const isArray = Array.isArray(v)
+        let ownKeys = []
+        try {
+          ownKeys = isMap ? [] : Object.getOwnPropertyNames(v)
+        } catch {
+          ownKeys = ['<unreadable>']
+        }
+        let size = null
+        try {
+          if (isMap || v instanceof Set) size = v.size
+        } catch {
+          size = null
+        }
+        return { ctor, isMap, isArray, ownKeys, size }
+      }
+      const details = {}
+      for (const key of own) {
+        let child
+        try {
+          child = baseline[key]
+        } catch {
+          details[key] = { error: 'getter threw' }
+          continue
+        }
+        const d = describeValue(child)
+        if (d.isMap) {
+          const entries = []
+          let i = 0
+          try {
+            for (const [k, val] of child) {
+              if (i++ >= 3) break
+              entries.push({ key: String(k), valueShape: walk(val).slice(0, 40) })
+            }
+          } catch {
+            entries.push({ error: 'iteration failed' })
+          }
+          details[key] = { ...d, entries }
+        } else {
+          details[key] = d
+        }
+      }
+      return send(res, 200, {
+        ok: true,
+        ctor: baseline?.constructor?.name ?? null,
+        ownKeys: own,
+        protoKeys: proto,
+        frameKeys: Object.keys(rawFrame ?? {}),
+        details,
+        sample: (() => {
+          try {
+            const p = baseline.projections
+            if (p instanceof Map) {
+              const first = [...p.keys()][0]
+              return { firstKey: String(first), shape: walk(p.get(first)).slice(0, 60) }
+            }
+            return { shape: walk(p).slice(0, 60) }
+          } catch (err) {
+            return { error: String(err?.message ?? err) }
+          }
+        })(),
+      })
+    }
 
     const sessions = {}
     const ensure = (id) => {

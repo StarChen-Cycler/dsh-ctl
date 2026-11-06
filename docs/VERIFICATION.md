@@ -198,11 +198,68 @@ dead end during verification.
 
 ---
 
+## 10. Second deployment: macOS arm64, DSH 0.2.1-rc.5
+
+Same plugin, different OS and a newer DSH. Three deployment failures had to be
+fixed first; they are written up in [MACOS.md](MACOS.md). Once the server boots:
+
+### 10.1 The CLI reads the desktop app's sessions
+
+`GET /ctl/sessions` returned **all seven** sessions the Electron desktop app had
+created on that machine, with their real titles and working directories — no
+migration, no export, no import:
+
+```
+session-AAAA…  "Research agent 飞书上线"        cordis  <home>/deepseek-harness/default-workspace
+session-BBBB…  "项目 agent 过度到 消费 agent"   cordis  <volume>/zyc_projects/panel-deck
+session-CCCC…  "Check IP address online"        cordis  <home>/deepseek-harness/default-workspace
+…
+```
+
+This settles the original question: the CLI and the desktop app share
+`$DSH_HOME/sessions`, and a plugin on the CLI side can enumerate what the desktop
+side produced.
+
+### 10.2 Session control still works
+
+```
+POST /ctl/create  {"cwd":"…"}  -> {"sessionId":"session-XXXXXXXX-…","agentPreset":"standard"}
+POST /ctl/prompt  {…}          -> {"accepted":true}
+GET  /ctl/sessions?limit=1     -> title "Use the pwsh tool to", running flag, cwd
+GET  /ctl/inspect?id=…         -> meta.version 4, meta.cwd, events[…]
+```
+
+`session/list` still carries `sessionId` and `projections.values.title`, so the
+defensive field readers needed no change.
+
+### 10.3 Regression: the control baseline lost `queues`
+
+| | 0.1.5-rc.2 | 0.2.1-rc.5 |
+|---|---|---|
+| baseline own keys | `projections`, `queues` | **`projections` only** |
+| queue `placement` | readable | **not published** |
+| `projections.values` | title, agentPreset, sessionStats | adds `tokenUsage`, `contextPressure`, `contextBreakdown` |
+
+`POST /ctl/prompt` with `mode: "steer"` is still accepted, but `/ctl/control`
+cannot show where the message landed. Documented as a known limitation rather than
+guessed at; `/ctl/control?raw=1` prints the current key list so the next version
+can be re-checked in one call.
+
+### 10.4 Version-specific shape confirmed again
+
+`meta.version` was 3 on Windows `0.1.5-rc.2` and 4 here, matching the changed
+on-disk layout (`session.v4.jsonl.zstd` under `<workspace>/<session-uuid>/` on
+macOS versus a flatter tree on the older Windows build). This is why the plugin
+never hardcodes a single field name.
+
+---
+
 ## Known unverified
 
-- **0.2.1-rc.5.** The second target machine runs this version. The plugin is written
-  defensively and ships `/ctl/debug/shape`, but the field paths above should be
-  re-confirmed there after install.
+- **Queue placement on 0.2.1-rc.5.** Accepted but not observable: the host no longer
+  publishes `queues` in the control baseline. Needs a different signal (the durable
+  `agent/inbox/spliced` record may carry it) before queue-versus-steer can be
+  demonstrated there.
 - **Schedule delivery with an idle session.** `dsh-schedule` documents that delivery
   requires a live root agent and that closed sessions keep reminders overdue.
   Whether an *open but idle* session in a `web` process still qualifies was not

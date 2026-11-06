@@ -231,6 +231,11 @@ key paths on your build instead of guessing. That is how the paths above were fo
 
 ## Limitations
 
+- **Queue visibility is version-dependent.** `GET /ctl/control` reports each
+  pending item's `placement` (`queued` vs `steering`) on `0.1.5-rc.2`. On
+  `0.2.1-rc.5` the host stopped publishing that field, so the queue comes back
+  empty even though `mode: "steer"` is still accepted. Use
+  `/ctl/control?raw=1` and `/ctl/debug/shape` to re-confirm on any new version.
 - Schedules and other live-owner features only fire while the process holds a live
   agent for that session; a closed session keeps its reminders overdue until resumed.
   Keep the daemon running if you depend on them.
@@ -238,6 +243,14 @@ key paths on your build instead of guessing. That is how the paths above were fo
   waits up to `ms` for new frames, then closes. It is not a persistent subscription.
 - Session deletion and forking are not exposed.
 - The plugin does not manage MCP servers or other plugins; it only controls sessions.
+
+## Platform notes
+
+- **macOS** has three deployment traps of its own (a `pnpm` shim, the vendor
+  runtime's hardened signature refusing the npm native addon, and the addon loader
+  not seeing a pnpm-global platform package). See [docs/MACOS.md](docs/MACOS.md).
+  Ready-made helpers live in [`scripts/`](scripts/): `pnpm-shim.sh`,
+  `mac-link-native-binding.sh`, `fleet-run.sh`, `mac-start-fleet.sh`.
 
 ## Enabling SSH on the target
 
