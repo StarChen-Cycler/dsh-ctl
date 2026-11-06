@@ -165,23 +165,57 @@ banner). If one of those is absent from `dsh-fleet.log`, that plugin did not mou
 
 ## Keeping it running with launchd
 
-```xml
-<!-- ~/Library/LaunchAgents/dev.dsh.fleet.plist -->
-<key>ProgramArguments</key>
-<array>
-  <string>/bin/sh</string>
-  <string>REPLACE_WITH_HOME/.dsh/fleet-run.sh</string>
-</array>
-<key>RunAtLoad</key><true/>
-<key>KeepAlive</key><true/>
-<key>StandardOutPath</key><string>REPLACE_WITH_HOME/Library/Logs/dsh-fleet.log</string>
-<key>StandardErrorPath</key><string>REPLACE_WITH_HOME/Library/Logs/dsh-fleet.log</string>
+Use the installer; it is idempotent and verifies the result.
+
+```sh
+sh scripts/mac-install-launchd.sh              # install + start
+sh scripts/mac-install-launchd.sh --uninstall  # stop + remove
 ```
 
-`launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/dev.dsh.fleet.plist`
+It stops any hand-started instance (which would otherwise fight for the port),
+writes `~/Library/LaunchAgents/dev.dsh.fleet.plist`, replaces the existing job, and
+polls the control plane until it answers.
 
-Note that launchd does not read your shell profile, which is exactly why every bit
-of environment wiring lives inside `fleet-run.sh` instead of in `.zshrc`.
+| key | value | effect |
+|---|---|---|
+| `RunAtLoad` | `true` | starts when the agent loads |
+| `KeepAlive` | `true` | restarts on any exit |
+| `ThrottleInterval` | `10` | a crash loop restarts at most every 10 s |
+| `Standard{Out,Error}Path` | `~/Library/Logs/dsh-fleet.log` | one log for both streams |
+
+launchd does not read your shell profile, which is exactly why every bit of
+environment wiring lives inside `fleet-run.sh` rather than in `.zshrc`.
+
+### The catch: a LaunchAgent loads at user login, not at boot
+
+A LaunchAgent in `~/Library/LaunchAgents` runs in the user's GUI session. If the
+machine reboots to the login window and nobody logs in, **nothing starts**.
+
+Two ways to cover that:
+
+- **Auto-login enabled** (System Settings → Users & Groups → Automatically log in
+  as…). Check with `defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser`.
+  This deployment has auto-login on, so a reboot does self-heal.
+- **A LaunchDaemon instead**, at `/Library/LaunchDaemons/`, which runs before any
+  login. That needs `sudo` and the job then runs as root — a bigger blast radius
+  for an agent that already has shell access, so prefer auto-login unless the
+  machine must stay at the login window.
+
+### Verifying it actually self-heals
+
+`launchctl print` alone proves nothing about restarts. Test the two behaviours:
+
+```sh
+# crash recovery
+pid=$(curl -s http://127.0.0.1:17390/ctl/health | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
+kill -9 "$pid"
+# a new pid within a few seconds, `runs` incremented in `launchctl print`
+
+# fresh-load startup (proxy for a login/reboot)
+launchctl bootout gui/$(id -u)/dev.dsh.fleet
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.dsh.fleet.plist
+# comes up with no manual `dsh` invocation
+```
 
 ## Version differences seen on 0.2.1-rc.5
 
