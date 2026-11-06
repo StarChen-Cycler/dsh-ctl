@@ -29,6 +29,31 @@ if (-not (Test-Path $launcher)) { throw "missing launcher: $launcher" }
 
 $log = if ($env:DSH_FLEET_LOG) { $env:DSH_FLEET_LOG } else { Join-Path $env:USERPROFILE 'dsh-fleet.log' }
 
+# Only one supervisor may run. Two of them would race to restart dsh and fight
+# over the listen port. A named mutex makes that impossible, so starting the
+# task twice (or a task plus a manual run) is harmless.
+#
+# Scope is Local\, not Global\: Global\ needs SeCreateGlobalPrivilege, and an
+# unelevated shell throws on construction — which would kill the supervisor
+# before it ever started dsh. Everything here lives in one user session anyway.
+$acquired = $true
+try {
+    $mutex = New-Object System.Threading.Mutex($false, 'Local\DSH-Fleet-Supervisor')
+    try {
+        $acquired = $mutex.WaitOne(0)
+    } catch [System.Threading.AbandonedMutexException] {
+        $acquired = $true
+    }
+} catch {
+    # Could not create or acquire the mutex: proceed rather than refuse to run.
+    Write-Host "supervisor: mutex unavailable ($($_.Exception.Message)); continuing without it"
+    $acquired = $true
+}
+if (-not $acquired) {
+    Write-Host 'another DSH fleet supervisor is already running; exiting.'
+    exit 0
+}
+
 function Write-Log {
     param([string]$Message)
     $line = '{0} [supervisor] {1}' -f (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'), $Message
