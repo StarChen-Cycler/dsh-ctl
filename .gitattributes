@@ -1,0 +1,8 @@
+# Normalise line endings in the repository, not in the working copy.
+# Shell scripts MUST be LF: a CRLF shebang fails on macOS and Linux with
+# "bad interpreter" before the first line of the script even runs.
+* text=auto eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary

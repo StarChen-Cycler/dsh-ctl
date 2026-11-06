@@ -1,0 +1,18 @@
+# dsh-ctl bundle patch.
+#
+# This row is what `dsh plugin --profile <profile> add dsh-ctl` mounts into the
+# profile tree. The plugin needs two host services, both shipped by the
+# `@deepseek-ai/dsh-web-app` bundle:
+#   - webServer          route registration point
+#   - sessionController  session list / create / prompt / cancel / follow
+#
+# Set `config.secret` to require a shared secret on every request. Leave it out
+# for plain loopback use behind SSH. Do NOT expose the web server on a
+# non-loopback address: `dsh web` ships its own `/api` auth fence but these
+# control routes are deliberately fenceless and rely on loopback + SSH for
+# access control.
+- insert:
+    - id: dsh-ctl
+      name: dsh-ctl
+      # config:
+      #   secret: change-me

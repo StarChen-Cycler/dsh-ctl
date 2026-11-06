@@ -1,0 +1,37 @@
+{
+  "name": "dsh-ctl",
+  "version": "0.1.0",
+  "description": "Loopback HTTP control plane for a long-running DeepSeek Harness (dsh web) process: list, create, prompt, cancel and tail sessions over SSH.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs",
+    "scripts"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "control-plane",
+    "session",
+    "automation",
+    "ssh"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
