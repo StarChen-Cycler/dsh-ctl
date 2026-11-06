@@ -87,8 +87,10 @@ usage: ctl.ps1 <command> [args]
   health
   sessions [--limit N] [--running]
   session <session-id>
+  control [--ms N]                 live queue (placement) + running stats
+  inspect <session-id>             durable header + event prefix, no agent wake
   create [--cwd PATH] [--preset NAME]
-  prompt <session-id> <text...>
+  prompt <session-id> <text...> [--mode queue|steer]
   cancel <session-id>
   rename <session-id> <title...>
   tail <session-id> [--frames N] [--ms N]
@@ -136,9 +138,25 @@ switch ($command) {
         Invoke-Ctl -Method POST -Path '/ctl/create' -Body $body
     }
     'prompt' {
-        if ($rest.Count -lt 2) { throw 'ctl: prompt <session-id> <text...>' }
-        $body = @{ sessionId = $rest[0]; text = ($rest[1..($rest.Count - 1)] -join ' ') }
+        if ($rest.Count -lt 2) { throw 'ctl: prompt <session-id> <text...> [--mode queue|steer]' }
+        $mode = 'queue'
+        $words = New-Object System.Collections.Generic.List[string]
+        for ($i = 1; $i -lt $rest.Count; $i++) {
+            if ($rest[$i] -eq '--mode' -and ($i + 1) -lt $rest.Count) { $mode = $rest[$i + 1]; $i++; continue }
+            $words.Add($rest[$i])
+        }
+        if ($mode -notin @('queue', 'steer')) { throw 'ctl: --mode must be queue or steer' }
+        $body = @{ sessionId = $rest[0]; text = ($words -join ' '); mode = $mode }
         Invoke-Ctl -Method POST -Path '/ctl/prompt' -Body $body
+    }
+    'control' {
+        $ms = Read-Flag $rest '--ms' 2500
+        Invoke-Ctl -Path "/ctl/control?ms=$ms"
+    }
+    'inspect' {
+        if ($rest.Count -lt 1) { throw 'ctl: inspect <session-id>' }
+        $id = [uri]::EscapeDataString($rest[0])
+        Invoke-Ctl -Path "/ctl/inspect?id=$id"
     }
     'cancel' {
         if ($rest.Count -lt 1) { throw 'ctl: cancel <session-id>' }

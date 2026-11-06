@@ -120,6 +120,84 @@ GET  /ctl/tail                                     -> 400
 
 ---
 
+## 9. Controlling a session that is already running
+
+A deliberately slow turn was created (a real `Start-Sleep` tool call) so there was
+a ~25 s window to work inside, and every observation below was taken while
+`running` was `true`.
+
+### 9.1 State is readable while the turn is in flight
+
+```
+GET /ctl/sessions?running=1        -> running=1
+GET /ctl/session?id=…              -> { "running": true, … }
+GET /ctl/inspect?id=…              -> keys: [meta, inheritedEventCount, events]
+GET /ctl/control?ms=3000           -> per-session queue + stats
+```
+
+`inspect` returned the durable header without activating the agent, including
+`meta.id`, `meta.cwd`, `meta.agentPreset` and the event prefix.
+
+### 9.2 `mode: "queue"` really queues
+
+```
+POST /ctl/prompt {"mode":"queue","text":"QUEUE-MARKER …"}
+  -> {"accepted":true}
+
+GET /ctl/control
+  value.queues.<sessionId>.0.placement = "queued"
+  value.queues.<sessionId>.0.message.content.0.text = "QUEUE-MARKER …"
+```
+
+In the durable log the message appears only **after** the current `turn/end`, as
+part of the following turn.
+
+### 9.3 `mode: "steer"` really steers
+
+```
+POST /ctl/prompt {"mode":"steer","text":"STEER-MARKER …"}
+  -> {"accepted":true}
+
+GET /ctl/control
+  value.queues.<sessionId>.1.placement = "steering"
+```
+
+The durable log proves it landed inside the running turn rather than waiting:
+
+```
+seq 17  assistant/message  "I'll run that exact command now."
+seq 25  user/message       "STEER-MARKER: stop counting and reply STEER-OK immediately"
+seq 27  assistant/message  "DONE"
+seq 29  turn/end
+seq 30  turn/start
+seq 33  user/message       "QUEUED-MARKER: after you finish, also reply QUEUE-OK"
+seq 35  assistant/message  "QUEUE-OK"
+```
+
+The steer message sits between the assistant step and `turn/end`; the queued
+message sits after a `turn/end`, inside the next turn. That is the difference the
+UI's steer button makes, reproduced over the API.
+
+The final projection from `/ctl/control`:
+
+```
+placement  text
+---------  ----
+queued     QUEUE-DEMO wait your turn
+steering   STEER-DEMO act now
+
+stats: {"turns":5,"steps":8,"llmMs":19847,"toolMs":49966,"ttftMs":8662,"decodeTokens":2032}
+```
+
+### 9.4 Note for anyone re-testing this
+
+Neither injected message is written to the durable log at acceptance time — they
+are live in-memory placements until the turn claims them. Watching `tail` to
+verify an injection will show nothing; watch `/ctl/control` instead. This cost one
+dead end during verification.
+
+---
+
 ## Known unverified
 
 - **0.2.1-rc.5.** The second target machine runs this version. The plugin is written

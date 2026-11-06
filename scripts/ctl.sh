@@ -36,8 +36,10 @@ usage: ctl <command> [args]
   health
   sessions [--limit N] [--running]
   session <session-id>
+  control [--ms N]                 live queue (placement) + running stats
+  inspect <session-id>             durable header + event prefix, no agent wake
   create [--cwd PATH] [--preset NAME]
-  prompt <session-id> <text...>
+  prompt <session-id> <text...> [--mode queue|steer]
   cancel <session-id>
   rename <session-id> <title...>
   tail <session-id> [--frames N] [--ms N]
@@ -93,11 +95,34 @@ case "$cmd" in
     ;;
 
   prompt)
-    [ $# -ge 2 ] || { echo "ctl: prompt <session-id> <text...>" >&2; exit 1; }
+    [ $# -ge 2 ] || { echo "ctl: prompt <session-id> <text...> [--mode queue|steer]" >&2; exit 1; }
     sid="$1"; shift
-    text="$*"
-    body="{\"sessionId\":\"$(json_escape "$sid")\",\"text\":\"$(json_escape "$text")\"}"
+    mode="queue"; modeflag=0; parts=""
+    for a in "$@"; do
+      if [ "$modeflag" -eq 1 ]; then mode="$a"; modeflag=0; continue; fi
+      if [ "$a" = "--mode" ]; then modeflag=1; continue; fi
+      parts="$parts $a"
+    done
+    text="$(printf '%s' "$parts" | sed 's/^ //')"
+    case "$mode" in queue|steer) ;; *) echo "ctl: --mode must be queue or steer" >&2; exit 1 ;; esac
+    body="{\"sessionId\":\"$(json_escape "$sid")\",\"text\":\"$(json_escape "$text")\",\"mode\":\"$mode\"}"
     curl -sS -X POST -H "content-type: application/json" $(auth_args) -d "$body" "$BASE/ctl/prompt"; echo
+    ;;
+
+  control)
+    ms=2500
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --ms) ms="$2"; shift 2 ;;
+        *) echo "ctl: unknown flag $1" >&2; exit 1 ;;
+      esac
+    done
+    curl -sS $(auth_args) "$BASE/ctl/control?ms=$ms"; echo
+    ;;
+
+  inspect)
+    [ $# -ge 1 ] || { echo "ctl: inspect <session-id>" >&2; exit 1; }
+    curl -sS $(auth_args) "$BASE/ctl/inspect?id=$(printf '%s' "$1" | sed 's/ /%20/g')"; echo
     ;;
 
   cancel)

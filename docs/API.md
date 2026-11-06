@@ -143,6 +143,61 @@ Poll `/ctl/sessions?running=1` or call `/ctl/tail` to observe progress.
 Cancels the in-flight turn. With no turn running it is a no-op that still returns
 `accepted: true`.
 
+## `GET /ctl/control?ms=&raw=1`
+
+Live state of every session the host tracks, read from the process-wide control
+stream. This is the endpoint to use **while a turn is in flight**.
+
+`ms` bounds how long to wait for the opening baseline (100–30000, default 2500).
+`raw=1` returns the full key-path dump instead of the projection.
+
+```json
+{
+  "ok": true,
+  "sessions": {
+    "session-65b44335-…": {
+      "queue": [
+        { "id": "25df4ced-…", "placement": "queued",   "rpcId": "f9db0b14-…", "text": "QUEUE-DEMO wait your turn" },
+        { "id": "ae8e2419-…", "placement": "steering", "rpcId": "a1c4f0e2-…", "text": "STEER-DEMO act now" }
+      ],
+      "stats": { "turns": 5, "steps": 8, "llmMs": 19847, "toolMs": 49966, "ttftMs": 8662, "decodeTokens": 2032 },
+      "planPending": false
+    }
+  }
+}
+```
+
+### `placement` is how `queue` and `steer` differ
+
+| injection `mode` | `placement` | meaning |
+|---|---|---|
+| `queue` (default) | `queued` | held until the current turn ends, then delivered as the next turn |
+| `steer` | `steering` | spliced into the turn that is already running |
+
+Both produce `accepted: true` and **neither appears in the durable log until the
+turn claims it**, so `tail` is the wrong place to look — use this endpoint.
+
+## `GET /ctl/inspect?id=<session-id>`
+
+Inspects one session without activating its agent: attached state plus the
+persisted header and event prefix.
+
+```json
+{
+  "ok": true,
+  "keys": ["meta", "inheritedEventCount", "events"],
+  "shape": [
+    { "path": "meta.id", "type": "string", "preview": "session-65b44335-…" },
+    { "path": "meta.cwd", "type": "string", "preview": "/srv/work" },
+    { "path": "events.3.data.target", "type": "string", "preview": "next-turn" }
+  ]
+}
+```
+
+`shape` is a bounded key-path walk (max 300 entries, depth 8). Useful when a
+field you depend on comes back empty on a new DSH version — compare the paths
+here against what this plugin expects.
+
 ## `POST /ctl/rename`
 
 ```json

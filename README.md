@@ -116,6 +116,45 @@ ssh <host> ctl cancel <session-id>
 The `ctl` helper in [`scripts/`](scripts/) wraps `curl` so you do not have to quote
 JSON through two shells. Copy it onto the host, or call it locally with `--host`.
 
+## Driving a session that is already running
+
+A session in the middle of a turn is not locked — you can still read it and you
+still have both ways to inject work into it.
+
+```sh
+# 1. is it running, and what is queued on it?
+ssh <host> ctl control
+
+# 2. read its durable state without waking the agent
+ssh <host> ctl inspect <session-id>
+
+# 3a. queue: wait for the current turn to finish
+ssh <host> ctl prompt <session-id> "then also update the changelog" --mode queue
+
+# 3b. steer: splice into the turn already running
+ssh <host> ctl prompt <session-id> "stop, use the staging branch instead" --mode steer
+```
+
+| | `--mode queue` | `--mode steer` |
+|---|---|---|
+| response | `accepted: true` | `accepted: true` |
+| queue `placement` | `queued` | `steering` |
+| lands in | the **next** turn | the **current** turn |
+| visible in `tail` before it lands | no | no |
+| visible in `control` | yes | yes |
+
+Both return before delivery, and neither writes to the durable log until the turn
+claims the message — so `control` (live state) is where you watch them, not `tail`.
+
+### Reading a running session
+
+| want | endpoint | what you get |
+|---|---|---|
+| is it running | `GET /ctl/sessions?running=1` | live execution flag |
+| live queue + stats | `GET /ctl/control` | per-item `placement`, turns/steps/llmMs/toolMs/ttftMs/decodeTokens |
+| durable state, no wake | `GET /ctl/inspect?id=` | `meta` header plus the persisted event prefix |
+| the actual messages | `GET /ctl/tail?sessionId=` | history snapshot, then live frames |
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -124,9 +163,11 @@ JSON through two shells. Copy it onto the host, or call it locally with `--host`
 | GET | `/ctl/health` | version, port, pid, platform, node, uptime, whether a secret is required |
 | GET | `/ctl/sessions?limit=&running=1` | sessions with `sessionId`, `title`, `cwd`, `agentPreset`, `model`, **`running`**, `blank`, `updatedAt` |
 | GET | `/ctl/session?id=` | one session |
+| GET | `/ctl/control?ms=&raw=1` | live queue (`placement`) and running stats |
+| GET | `/ctl/inspect?id=` | durable header + event prefix without activating the agent |
 | GET | `/ctl/tail?sessionId=&frames=&ms=` | history snapshot plus live frames, normalised |
 | POST | `/ctl/create` | `{ cwd?, sessionId?, agentPreset? }` |
-| POST | `/ctl/prompt` | `{ sessionId, text, mode?, requestId? }` |
+| POST | `/ctl/prompt` | `{ sessionId, text, mode?, requestId? }` — `mode`: `queue`/`steer` |
 | POST | `/ctl/cancel` | `{ sessionId }` |
 | POST | `/ctl/rename` | `{ sessionId, title }` |
 | GET | `/ctl/debug/shape?sessionId=&type=` | read-only schema introspection (see below) |

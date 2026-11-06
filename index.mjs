@@ -255,6 +255,8 @@ export function apply(ctx, config = {}) {
         'GET  /ctl/health',
         'GET  /ctl/sessions?limit=&running=1',
         'GET  /ctl/session?id=',
+        'GET  /ctl/control?ms=&raw=1',
+        'GET  /ctl/inspect?id=',
         'GET  /ctl/tail?sessionId=&frames=&ms=',
         'POST /ctl/create   {cwd?}',
         'POST /ctl/prompt   {sessionId, text, mode?}',
@@ -362,6 +364,124 @@ export function apply(ctx, config = {}) {
       clearTimeout(timer)
     }
     send(res, 200, { ok: true, type: wanted, found: shapes.length, paths: shapes[0] ?? [] })
+  })
+
+  // Live per-session state: the pending queue (each item carries a `placement`,
+  // which is exactly how `queue` and `steer` injection differ) plus running
+  // stats. `control()` is a process-wide stream, not per-session.
+  //
+  //   placement 'queued'   -> the message waits for the next turn
+  //   placement 'steering' -> the message was spliced into the turn in flight
+  //
+  // The baseline arrives as one live object; only leaf scalars are read out.
+  // Pass ?raw=1 for the full key-path dump when a version changes shape.
+  route('/ctl/control', async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const ms = Math.min(Math.max(Number(url.searchParams.get('ms') ?? 2500) || 2500, 100), 30_000)
+    const raw = url.searchParams.get('raw') === '1'
+
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), ms)
+    let baseline = null
+    try {
+      for await (const frame of controller.control(abort.signal)) {
+        if (frame?.type === 'baseline') {
+          baseline = frame.value
+          break
+        }
+      }
+    } catch (err) {
+      if (!abort.signal.aborted) throw err
+    } finally {
+      clearTimeout(timer)
+    }
+
+    if (baseline === null) return send(res, 200, { ok: true, sessions: {}, note: 'no baseline within timeout' })
+    if (raw) return send(res, 200, { ok: true, shape: walk(baseline) })
+
+    const sessions = {}
+    const ensure = (id) => {
+      if (!sessions[id]) sessions[id] = { queue: [], stats: null, planPending: null }
+      return sessions[id]
+    }
+
+    const queues = baseline.queues
+    if (queues && typeof queues === 'object') {
+      let ids = []
+      try {
+        ids = Object.keys(queues)
+      } catch {
+        ids = []
+      }
+      for (const id of ids) {
+        let list = []
+        try {
+          list = Array.isArray(queues[id]) ? queues[id] : []
+        } catch {
+          list = []
+        }
+        const entry = ensure(id)
+        for (const item of list) {
+          const content = item?.message?.content
+          let text = null
+          if (Array.isArray(content)) {
+            const parts = content.filter((p) => p && p.type === 'text' && typeof p.text === 'string').map((p) => p.text)
+            if (parts.length > 0) text = parts.join('\n')
+          }
+          entry.queue.push({
+            id: typeof item?.id === 'string' ? item.id : null,
+            placement: typeof item?.placement === 'string' ? item.placement : null,
+            rpcId: typeof item?.rpcId === 'string' ? item.rpcId : null,
+            text: text === null ? null : text.slice(0, 2000),
+          })
+        }
+      }
+    }
+
+    const projections = baseline.projections
+    if (projections && typeof projections === 'object') {
+      let ids = []
+      try {
+        ids = Object.keys(projections)
+      } catch {
+        ids = []
+      }
+      for (const id of ids) {
+        const entry = ensure(id)
+        let values = null
+        try {
+          values = projections[id]?.values ?? null
+        } catch {
+          values = null
+        }
+        if (!values) continue
+        const stats = values.sessionStats
+        if (stats && typeof stats === 'object') {
+          entry.stats = {
+            turns: typeof stats.turns === 'number' ? stats.turns : null,
+            steps: typeof stats.steps === 'number' ? stats.steps : null,
+            llmMs: typeof stats.llmMs === 'number' ? stats.llmMs : null,
+            toolMs: typeof stats.toolMs === 'number' ? stats.toolMs : null,
+            ttftMs: typeof stats.ttftMs === 'number' ? stats.ttftMs : null,
+            decodeTokens: typeof stats.decodeTokens === 'number' ? stats.decodeTokens : null,
+          }
+        }
+        if (values.plan && typeof values.plan.pending === 'boolean') entry.planPending = values.plan.pending
+      }
+    }
+
+    send(res, 200, { ok: true, sessions })
+  })
+
+  // Inspect one session without activating its agent: attached state plus the
+  // persisted header and event prefix. Useful while a turn is in flight.
+  route('/ctl/inspect', async (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const id = url.searchParams.get('id')
+    if (!id) return send(res, 400, { ok: false, error: 'id is required' })
+    const abort = new AbortController()
+    const value = await controller.inspect(id, abort.signal)
+    send(res, 200, { ok: true, keys: value ? Object.keys(value) : [], shape: walk(value) })
   })
 
   route('/ctl/create', async (req, res) => {
