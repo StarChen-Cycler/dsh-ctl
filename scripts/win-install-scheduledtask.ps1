@@ -18,11 +18,19 @@
 
 .PARAMETER NoStart
     Register the task but do not start it now.
+
+.PARAMETER Limited
+    Run the fleet with the user's normal token instead of elevating it. dsh web
+    needs no administrator rights, and an elevated fleet cannot be inspected or
+    stopped by the same user's ordinary tooling: its command line is unreadable
+    and Stop-Process fails without a prompt. Prefer this unless something in the
+    profile genuinely requires elevation.
 #>
 [CmdletBinding()]
 param(
     [switch]$Uninstall,
-    [switch]$NoStart
+    [switch]$NoStart,
+    [switch]$Limited
 )
 
 $ErrorActionPreference = 'Stop'
@@ -122,12 +130,13 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1)
 
-if ($elevated) {
+if ($elevated -and -not $Limited) {
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
         -Settings $settings -RunLevel Highest -Force | Out-Null
 } else {
     try {
-        Write-Host '  not elevated: registering a per-user task (RunLevel Limited)'
+        if ($Limited) { Write-Host '  -Limited: registering with the normal user token' }
+        elseif (-not $elevated) { Write-Host '  not elevated: registering a per-user task (RunLevel Limited)' }
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
             -Settings $settings -Force -ErrorAction Stop | Out-Null
     } catch {
