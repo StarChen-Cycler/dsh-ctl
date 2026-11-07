@@ -161,7 +161,7 @@ claims the message — so `control` (live state) is where you watch them, not `t
 |---|---|---|
 | GET | `/ctl` | route index |
 | GET | `/ctl/health` | version, port, pid, platform, node, uptime, whether a secret is required |
-| GET | `/ctl/sessions?limit=&running=1` | sessions with `sessionId`, `title`, `cwd`, `agentPreset`, `model`, **`running`**, `blank`, `updatedAt` |
+| GET | `/ctl/sessions?limit=&running=1` | sessions with `sessionId`, `title`, `cwd`, `agentPreset`, `model`, **`running`**, `blank`, `lastUserInputAt` |
 | GET | `/ctl/session?id=` | one session |
 | GET | `/ctl/control?ms=&raw=1` | live queue (`placement`) and running stats |
 | GET | `/ctl/inspect?id=` | durable header + event prefix without activating the agent |
@@ -180,6 +180,32 @@ Full request/response shapes: [docs/API.md](docs/API.md).
 It reflects the owning process's live state, not the on-disk history, so it is the
 one thing you cannot get by reading session archives. Verified to flip `true` within
 ~300 ms of a prompt and back to `false` when the turn settles.
+
+### How to tell whether a session is alive
+
+**Do not use a timestamp for this.** The listing carries `lastUserInputAt`, and the
+name says exactly what it is: the host raises its `api-session/activity` signal —
+the source of that field — **only for `user/message` events whose `source.kind` is
+`user`** (`dsh-api-session-controller`, `lib/types/index.js`). Assistant messages,
+tool calls and steps never advance it. An agent working autonomously for a day will
+keep that timestamp frozen the whole time.
+
+Before 0.1.1 this field was exported as `updatedAt`, which reads like a liveness
+signal and misled the maintainer into diagnosing a healthy 24-hour autonomous run as
+a stalled session. It is renamed.
+
+Use instead:
+
+| signal | endpoint | meaning |
+|---|---|---|
+| `running` | `/ctl/sessions` | host says the agent is executing |
+| `time` of the newest record | `/ctl/tail` | when the log last actually moved |
+| `stats.steps` | `/ctl/control` | monotonic in-memory step counter |
+
+`/ctl/tail` records now carry `time` (0.1.1) so the second row is one call.
+`/ctl/control` also reports `lastEventSeq`, but it is a **flush cursor**: it can sit
+still for seconds while the agent is working, so a changing value proves progress
+and an unchanged value proves nothing.
 
 ## Security model
 

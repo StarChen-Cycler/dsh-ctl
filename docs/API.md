@@ -61,7 +61,7 @@ Query: `limit` (1–1000, default 50), `running=1` to filter to executing sessio
       "running": false,
       "blank": false,
       "completed": false,
-      "updatedAt": 1793940385717
+      "lastUserInputAt": 1793940385717
     }
   ]
 }
@@ -69,6 +69,13 @@ Query: `limit` (1–1000, default 50), `running=1` to filter to executing sessio
 
 `total` is the number of sessions the host knows about, `running` the number
 executing at the moment of the call, `returned` how many are in `items`.
+
+> **`lastUserInputAt` is not a liveness signal.** The host raises
+> `api-session/activity` — the only source of this value — exclusively for
+> `user/message` events whose `source.kind` is `user`, so assistant messages, tool
+> calls and steps never move it. An agent working autonomously keeps it frozen.
+> Use `running`, the `time` of the newest `/ctl/tail` record, or `stats.steps`
+> from `/ctl/control` instead. (Before 0.1.1 this field was called `updatedAt`.)
 
 ## `GET /ctl/session?id=<session-id>`
 
@@ -87,8 +94,8 @@ Opens a follow stream, returns the opening history snapshot, waits up to `ms`
   "cursor": 19,
   "hasMore": false,
   "records": [
-    { "seq": 8,  "type": "user/message",      "role": "user",      "text": "Reply with exactly: PONG", "provider": null, "model": null, "usage": null },
-    { "seq": 17, "type": "assistant/message", "role": "assistant", "text": "PONG", "provider": "deepseek-official", "model": "deepseek-flash",
+    { "seq": 8,  "time": 1793940195129, "type": "user/message",      "role": "user",      "text": "Reply with exactly: PONG", "provider": null, "model": null, "usage": null },
+    { "seq": 17, "time": 1793940387408, "type": "assistant/message", "role": "assistant", "text": "PONG", "provider": "deepseek-official", "model": "deepseek-flash",
       "usage": { "inputTokens": 19211, "outputTokens": 3, "totalTokens": 20366, "contextTokens": 1152 } }
   ],
   "events": []
@@ -160,12 +167,18 @@ stream. This is the endpoint to use **while a turn is in flight**.
         { "id": "25df4ced-…", "placement": "queued",   "rpcId": "f9db0b14-…", "text": "QUEUE-DEMO wait your turn" },
         { "id": "ae8e2419-…", "placement": "steering", "rpcId": "a1c4f0e2-…", "text": "STEER-DEMO act now" }
       ],
+      "lastEventSeq": 6196,
       "stats": { "turns": 5, "steps": 8, "llmMs": 19847, "toolMs": 49966, "ttftMs": 8662, "decodeTokens": 2032 },
       "planPending": false
     }
   }
 }
 ```
+
+`lastEventSeq` is the durable log position the projection has folded up to. It is a
+**flush cursor, not a heartbeat**: it can sit still for seconds while the agent is
+actively working. A changing value proves progress; an unchanged value proves
+nothing. `stats.steps` is the better in-memory liveness counter.
 
 ### `placement` is how `queue` and `steer` differ
 

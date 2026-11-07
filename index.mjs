@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto'
 export const name = 'dsh-ctl'
 export const inject = ['webServer', 'sessionController']
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.1'
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 /** JSON response helper. */
@@ -109,7 +109,16 @@ function projectSession(summary) {
     running: summary?.running === true,
     blank: summary?.blank === true,
     completed: summary?.completed === true,
-    updatedAt: typeof summary?.updatedAt === 'number' ? summary.updatedAt : null,
+    /**
+     * NOT a liveness signal. The host emits `api-session/activity` — the source
+     * of this field — only for `user/message` events whose `source.kind` is
+     * `user` (dsh-api-session-controller, lib/types/index.js). Assistant
+     * messages, tool calls and steps never advance it, so an autonomous run can
+     * continue for hours while this timestamp stays fixed. Use `running` plus
+     * the `time` of the newest record from `/ctl/tail`, or `stats.steps` from
+     * `/ctl/control`, to judge whether a session is alive.
+     */
+    lastUserInputAt: typeof summary?.updatedAt === 'number' ? summary.updatedAt : null,
   }
 }
 
@@ -184,6 +193,7 @@ function projectRecord(record) {
 
   return {
     seq,
+    time: typeof event?.time === 'number' ? event.time : null,
     type,
     role,
     text: typeof text === 'string' ? text.slice(0, 8000) : null,
@@ -476,7 +486,7 @@ export function apply(ctx, config = {}) {
 
     const sessions = {}
     const ensure = (id) => {
-      if (!sessions[id]) sessions[id] = { queue: [], stats: null, planPending: null }
+      if (!sessions[id]) sessions[id] = { queue: [], lastEventSeq: null, stats: null, planPending: null }
       return sessions[id]
     }
 
@@ -524,11 +534,21 @@ export function apply(ctx, config = {}) {
       for (const id of ids) {
         const entry = ensure(id)
         let values = null
+        let asOfSeq = null
         try {
-          values = projections[id]?.values ?? null
+          const projection = projections[id]
+          values = projection?.values ?? null
+          // Durable log position the projection has folded up to. It advances
+          // with writes, but it is a *flush* cursor: it can sit still for
+          // seconds while the agent is actively working, so treat a changing
+          // value as proof of progress and an unchanged value as no evidence
+          // either way. `stats.steps` is the better in-memory heartbeat.
+          asOfSeq = typeof projection?.asOfSeq === 'number' ? projection.asOfSeq : null
         } catch {
           values = null
+          asOfSeq = null
         }
+        entry.lastEventSeq = asOfSeq
         if (!values) continue
         const stats = values.sessionStats
         if (stats && typeof stats === 'object') {

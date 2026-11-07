@@ -338,6 +338,61 @@ into `win-verify-fleet.ps1`, which is why that script exists.
 
 ---
 
+## 12. `updatedAt` is not a liveness signal (0.1.1)
+
+A session on the macOS host had been working autonomously for ~24 hours. Its
+listing entry showed `running: true` but `updatedAt` fixed at the previous day, so
+it read as a stalled turn. It was not:
+
+```
+last event  tool/call  event.time = 1794031169401
+wall clock            now          = 1794031171832     (~2 s apart)
+tool/call   name = subagent   arguments {"description":"Audit v2 consistency and claims"}
+stats.steps  745 -> 746 over 25 s
+```
+
+### 12.1 The cause, from the host source
+
+`@deepseek-ai/dsh-api-session-controller@0.2.1-rc.5`, `lib/types/index.js`:
+
+```js
+ctx.on('session/event', (session, event) => {
+    ...
+    if (event.type !== 'user/message' || event.data.source.kind !== 'user')
+        return;
+    ctx.emit('api-session/activity', session.id, event.time);
+});
+```
+
+`api-session/activity` is emitted **only for user-typed messages**. Assistant
+messages, tool calls and steps never raise it. So the value advances when a human
+(or an injected prompt) speaks, and stays frozen through any amount of autonomous
+work. Confirmed by comparison: the session's newest `user/message` had
+`event.time = 1793945031830`, matching the reported `updatedAt` of `…832`.
+
+### 12.2 A second candidate that also failed
+
+`projections[<id>].asOfSeq` looked like a usable heartbeat. It is not:
+
+```
+asOfSeq 6196  ->  6196   (20 s later, while stats.steps advanced)
+```
+
+It is a durable flush cursor, not an in-memory state counter.
+
+### 12.3 What changed
+
+| change | why |
+|---|---|
+| `/ctl/sessions`, `/ctl/session`: `updatedAt` → **`lastUserInputAt`** | the old name invited exactly the misreading above |
+| `/ctl/tail` records gain **`time`** | the only trustworthy activity timestamp; it was being dropped, forcing callers into `/ctl/debug/shape` |
+| `/ctl/control` gains **`lastEventSeq`** | exposes the flush cursor, documented as "changing value proves progress; unchanged proves nothing" |
+
+Liveness now has three usable signals: `running`, the `time` of the newest tail
+record, and `stats.steps`.
+
+---
+
 ## Known unverified
 
 - **Queue placement on 0.2.1-rc.5.** Accepted but not observable: the host no longer
