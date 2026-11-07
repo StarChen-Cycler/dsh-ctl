@@ -91,8 +91,13 @@ if (-not (Test-Path $supervisor)) { throw "missing supervisor: $supervisor" }
 $elevated = Test-Admin
 
 Write-Host "== registering task $TaskName =="
+# -WindowStyle Hidden is what keeps the supervisor off the desktop. Task
+# Scheduler starts the process through a console host, and without this flag a
+# visible console window appears at logon and stays for the life of the task -
+# it cannot be dismissed without killing the supervisor. -NonInteractive/-NoLogo
+# just keep that hidden console quiet.
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $supervisor)
+    -Argument ('-NoProfile -NonInteractive -NoLogo -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $supervisor)
 
 $triggers = @(New-ScheduledTaskTrigger -AtLogOn)
 
