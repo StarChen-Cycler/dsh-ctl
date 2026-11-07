@@ -244,9 +244,11 @@ user/message       -> event.data.content[]
 assistant/message  -> event.data.message.content[]
 ```
 
-This plugin reads every field defensively (old name, new name, then absent) and, when
-something still does not line up, exposes `/ctl/debug/shape` so you can see the real
-key paths on your build instead of guessing. That is how the paths above were found.
+This plugin reads the shapes it knows about defensively — every field access is
+guarded, and a missing field comes back as `null` rather than throwing. It does not
+guess at alternative names: when something does not line up, it exposes
+`/ctl/debug/shape` so you can see the real key paths on your build instead of
+guessing. That is how the paths above were found.
 
 ## Compatibility
 
@@ -256,7 +258,7 @@ key paths on your build instead of guessing. That is how the paths above were fo
 | `0.2.1-rc.5` | macOS arm64 | verified — sessions, create, prompt, inspect, tail |
 | `0.2.1-rc.5` | Windows 10 22H2 | verified — sessions, control plane, scheduled-task persistence |
 
-That table is the **DSH** version, not the plugin's own version (`0.1.0`). After any
+That table is the **DSH** version, not the plugin's own version (`0.1.1`). After any
 DSH upgrade, re-run `/ctl/debug/shape` and `/ctl/control?raw=1` before trusting a
 field.
 
@@ -308,10 +310,18 @@ Three deployment traps, all covered in [docs/MACOS.md](docs/MACOS.md):
 1. **A process started over SSH dies when that session closes.** Task Scheduler,
    not `nohup`, is the answer. This is the one Windows behaviour that catches
    everyone.
-2. Task Scheduler has no `KeepAlive`; the supervisor loop supplies it.
-3. Install with **npm**, not pnpm: the flat global layout removes the need for the
+2. Task Scheduler has no `KeepAlive`; the supervisor loop supplies it — it probes
+   `/ctl/health` rather than waiting on a child process, so a wedged server cannot
+   stall it.
+3. Register the task with `-Limited`. Running the fleet elevated buys nothing and
+   makes it unmanageable from the same user's normal tooling — see
+   [docs/WINDOWS.md](docs/WINDOWS.md) 4.3 and 4.4.
+4. The task action and the supervisor both hide the console window. Without that,
+   an `Administrator: powershell.exe` window sits on the desktop for the life of
+   the task and cannot be closed without killing the supervisor.
+5. Install with **npm**, not pnpm: the flat global layout removes the need for the
    `NODE_PATH` shim entirely.
-4. The remote shell is `cmd.exe`, which eats `?` and `&` in URLs — always drive the
+6. The remote shell is `cmd.exe`, which eats `?` and `&` in URLs — always drive the
    control plane from a script, never an inline `curl`.
 
 Details: [docs/WINDOWS.md](docs/WINDOWS.md).

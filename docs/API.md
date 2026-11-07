@@ -190,6 +190,12 @@ nothing. `stats.steps` is the better in-memory liveness counter.
 Both produce `accepted: true` and **neither appears in the durable log until the
 turn claims it**, so `tail` is the wrong place to look — use this endpoint.
 
+> **Version caveat.** `placement` comes from the host's `queues` projection, which
+> `0.2.1-rc.5` no longer publishes: on that version the field is absent and this
+> endpoint cannot distinguish queue from steer. `accepted: true` still means the
+> injection was taken; it says nothing about where it landed. Verified on
+> `0.1.5-rc.2` only — see [VERIFICATION.md](VERIFICATION.md) 9.2, 9.3 and 10.3.
+
 ## `GET /ctl/inspect?id=<session-id>`
 
 Inspects one session without activating its agent: attached state plus the

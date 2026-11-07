@@ -61,14 +61,25 @@ function Install-StartupLauncher {
 Set sh = CreateObject("WScript.Shell")
 sh.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""$supervisor""", 0, False
 "@
-    Set-Content -Path $vbs -Value $body -Encoding ASCII
+    try {
+        Set-Content -Path $vbs -Value $body -Encoding ASCII -ErrorAction Stop
+    } catch {
+        # A locked-down box can refuse to write a script container into the
+        # Startup folder even though the folder itself is writable.
+        Write-Host ("  could not write {0}: {1}" -f $vbs, $_.Exception.Message) -ForegroundColor Yellow
+        Write-Host '  no logon launcher was installed' -ForegroundColor Yellow
+        return
+    }
     Write-Host "  installed login launcher: $vbs"
 
     Write-Host '  starting it now'
     Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$vbs`"" -WindowStyle Hidden
 
     $port = if ($env:DSH_FLEET_PORT) { [int]$env:DSH_FLEET_PORT } else { 17390 }
-    for ($i = 1; $i -le 40; $i++) {
+    # Worst case is one probe interval (10 s) plus the supervisor's startup grace
+    # (60 s) plus dsh's own boot; 90 s covers that without failing a slow but
+    # valid first start.
+    for ($i = 1; $i -le 90; $i++) {
         Start-Sleep -Seconds 1
         try {
             $null = Invoke-RestMethod -Uri "http://127.0.0.1:$port/ctl/health" -TimeoutSec 2
@@ -160,7 +171,9 @@ Start-ScheduledTask -TaskName $TaskName
 
 $port = if ($env:DSH_FLEET_PORT) { [int]$env:DSH_FLEET_PORT } else { 17390 }
 $ok = $false
-for ($i = 1; $i -le 40; $i++) {
+# Worst case is one probe interval (10 s) plus the supervisor's startup grace
+# (60 s) plus dsh's own boot; wait that long before calling it a failure.
+for ($i = 1; $i -le 90; $i++) {
     Start-Sleep -Seconds 1
     try {
         $null = Invoke-RestMethod -Uri "http://127.0.0.1:$port/ctl/health" -TimeoutSec 2

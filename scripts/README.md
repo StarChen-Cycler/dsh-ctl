@@ -77,8 +77,8 @@ Scheduler.
 |---|---|
 | `fleet-run.ps1` | foreground launcher; validates Node >= 22, then runs `dsh <profile> --port <port> --no-open` |
 | `win-start-fleet.ps1` | starts it detached and waits for `/ctl/health` — smoke test only, it will NOT outlive the session |
-| `win-supervise-fleet.ps1` | restart loop; supplies the `KeepAlive` that Task Scheduler lacks |
-| `win-install-scheduledtask.ps1` | registers task `DSH-Fleet` at logon and starts it; `-Uninstall` removes it |
+| `win-supervise-fleet.ps1` | health-probe loop: starts a launcher whenever `/ctl/health` stops answering. Supplies the `KeepAlive` that Task Scheduler lacks, and hides its own console window |
+| `win-install-scheduledtask.ps1` | registers task `DSH-Fleet` at logon and starts it (add `-Limited` to avoid running the fleet elevated); `-Uninstall` removes it |
 | `win-verify-fleet.ps1` | prints health, sessions and live queue (a Windows remote shell mangles URLs, so this must be a script) |
 
 ```powershell

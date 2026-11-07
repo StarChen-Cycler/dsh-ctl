@@ -87,6 +87,13 @@ function Test-FleetHealth {
         $r = Invoke-RestMethod -Uri "http://127.0.0.1:$port/ctl/health" -TimeoutSec 5
         return ($r.ok -eq $true)
     } catch {
+        # Log the reason, but only when it changes, so a long outage does not
+        # fill the log with one identical line per probe.
+        $reason = $_.Exception.Message
+        if ($reason -ne $script:lastProbeError) {
+            Write-Log ("probe failed: {0}" -f $reason)
+            $script:lastProbeError = $reason
+        }
         return $false
     }
 }
@@ -107,25 +114,19 @@ while ($true) {
         Write-Log 'control plane not answering; starting launcher'
         try { Start-Launcher } catch { Write-Log "launcher start failed: $($_.Exception.Message)" }
 
-        # Wait for it to come up, but stop waiting the moment it came up and then
-        # died again. Without that, a server that starts and immediately crashes
-        # keeps the supervisor inside the grace window for its whole duration,
-        # which delays recovery by up to StartupGraceSeconds.
-        $everUp = $false
+        # Wait for it to come up, then hand control back to the outer probe loop.
+        # Breaking on the first healthy probe matters: continuing inside the grace
+        # window would delay both the 'control plane is up' line and the next
+        # crash check by up to StartupGraceSeconds. A server that comes up and
+        # immediately dies is caught by the next outer probe, so it needs no
+        # special case here.
+        $recovered = $false
         $deadline = (Get-Date).AddSeconds($StartupGraceSeconds)
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 3
-            $healthy = Test-FleetHealth
-            if ($healthy) {
-                $everUp = $true
-                continue
-            }
-            if ($everUp) {
-                Write-Log 'came up and went down again during startup; restarting now'
-                break
-            }
+            if (Test-FleetHealth) { $recovered = $true; break }
         }
-        if ($everUp) { Write-Log 'control plane is up' }
+        if ($recovered) { Write-Log 'control plane is up' }
         else { Write-Log "still not answering after ${StartupGraceSeconds}s; will retry" }
     }
 

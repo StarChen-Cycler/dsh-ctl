@@ -210,9 +210,9 @@ created on that machine, with their real titles and working directories — no
 migration, no export, no import:
 
 ```
-session-AAAA…  "Research agent 飞书上线"        cordis  <home>/deepseek-harness/default-workspace
-session-BBBB…  "项目 agent 过度到 消费 agent"   cordis  <volume>/zyc_projects/panel-deck
-session-CCCC…  "Check IP address online"        cordis  <home>/deepseek-harness/default-workspace
+session-AAAA…  "<desktop session 1>"   cordis  <home>/deepseek-harness/default-workspace
+session-BBBB…  "<desktop session 2>"   cordis  <volume>/<projects>/<one project>
+session-CCCC…  "<desktop session 3>"   cordis  <home>/deepseek-harness/default-workspace
 …
 ```
 
@@ -278,12 +278,12 @@ titles and workspace paths:
 
 ```
 total=11 running=0
-  session-…  [idle]  Amazon COO        D:\Backup\Documents\deepseek-harness\default-workspace
-  session-…  [idle]  Amazon Ads        …
-  session-…  [idle]  Amazon Listing    …
-  session-…  [idle]  Amazon finance    …
-  session-…  [idle]  Amazon health     …
-  session-…  [idle]  Amazon promotion  …
+  session-…  [idle]  <session 1>    <home>\deepseek-harness\default-workspace
+  session-…  [idle]  <session 2>    …
+  session-…  [idle]  <session 3>    …
+  session-…  [idle]  <session 4>    …
+  session-…  [idle]  <session 5>    …
+  session-…  [idle]  <session 6>    …
 ```
 
 ### 11.3 A process started over SSH does not survive the session
@@ -316,8 +316,13 @@ Then both behaviours were tested from a **fresh** SSH session:
 
 | test | result |
 |---|---|
-| survived the session that started it | ✅ pid 13236 still serving, uptime 14 s |
-| crash recovery (`taskkill /IM node.exe /F`) | ✅ new pid 11540 within ~10 s |
+| survived the session that started it | ✅ the same pid was still serving after reconnecting (`uptime` was only seconds, so this shows survival of the session, not uptime) |
+| crash recovery | ✅ a new pid within ~10 s |
+
+> Note for re-testing: that run killed the server by image name (`taskkill /IM
+> node.exe /F`), which is unsafe on a machine running other Node services and
+> proves nothing on its own. Kill the pid `/ctl/health` reports instead — see
+> [WINDOWS.md](WINDOWS.md), "Verifying it actually self-heals".
 
 ### 11.5 A logon trigger still needs a login
 
@@ -390,6 +395,103 @@ It is a durable flush cursor, not an in-memory state counter.
 
 Liveness now has three usable signals: `running`, the `time` of the newest tail
 record, and `stats.steps`.
+
+---
+
+## 13. Windows autostart: hidden, least-privilege, actually self-healing (0.1.1)
+
+Registering task `DSH-Fleet` at logon was not enough to get a service that
+survives a crash. Three defects surfaced while proving it — plus one recovery
+route worth writing down — all on the same deployment, and each was only visible
+by testing behaviour rather than reading state.
+
+### 13.1 A supervisor that waits on its child cannot supervise
+
+The original loop ran the launcher synchronously:
+
+```powershell
+& powershell.exe -File fleet-run.ps1 *>> $log
+```
+
+That ties the supervisor's progress to one child's lifetime: it cannot start a
+replacement until the call returns, and if the child wedges instead of exiting the
+call never returns at all. What was observed after killing the server process was
+the service staying down while `Get-Process` still listed a supervisor. That is
+consistent with a call that had not returned, but the run was also entangled with
+the elevation problems in 13.3, so the mechanism was never isolated cleanly — the
+fix is justified by the shape of the loop, not by a proven root cause.
+
+Replaced with a health probe: the outer loop asks `/ctl/health` every 10 s and
+starts a launcher when nothing answers. It never waits on a child, so no child's
+lifetime can hold it up.
+
+Worth knowing while reading those logs: during `dsh` boot the HTTP server is
+already listening before the plugin's routes are registered, so `/ctl/health`
+answers **404** for a moment. The supervisor now logs the probe failure reason
+(once per distinct message, not once per probe), which is how that was found.
+
+Measured recovery after `Stop-Process` on the serving pid, with the probe loop in
+place: **10 s**, **19 s**, **23 s** and **38 s** across runs, i.e. one probe
+interval plus dsh's boot time. The pessimistic bound is
+`StartupGraceSeconds + RestartDelaySeconds` (70 s) and only applies when a launcher
+never becomes healthy at all.
+
+The grace loop must break on the first healthy probe. An earlier version recorded
+"up" but kept looping until the deadline, which delayed both that log line and the
+next crash check by up to 60 s — observed as `16:13:57 … starting launcher` →
+`16:14:59 … control plane is up`. After the fix the same sequence takes 11 s
+(`16:16:01` → `16:16:12`).
+
+### 13.2 The task put a console window on the desktop
+
+The registered action had no window-style flag, so an elevated
+`Administrator: powershell.exe` window appeared at logon and stayed for the life
+of the task. Closing it kills the supervisor, so it cannot simply be dismissed.
+
+Two changes, deliberately redundant:
+
+- task action gains `-WindowStyle Hidden -NonInteractive -NoLogo`
+- the supervisor hides its own console via
+  `ShowWindow(GetConsoleWindow(), SW_HIDE)` at startup
+
+The second is what actually fixes an existing installation: the action flag only
+applies on the next registration, whereas the script-level hide takes effect
+immediately. Verified by starting the task through its *unmodified* action and
+counting visible PowerShell windows: **0**.
+
+### 13.3 `-RunLevel Highest` made the fleet unmanageable
+
+`dsh web` needs no administrator rights, but the task was registered as highest,
+so the whole fleet ran elevated. The damage is to verification and operability:
+
+| symptom | cause |
+|---|---|
+| `Stop-Process` silently does nothing, so a recovery test "fails" | the victim is elevated; the call is denied |
+| a `CommandLine` filter finds no node processes at all | the command line of an elevated process is unreadable to a normal caller |
+| `/ctl/health` appears to report a stale pid | nothing was stale — the process was simply unkillable |
+
+All three false diagnoses were produced while the service was healthy. Fixed by
+the `-Limited` switch, now the recommended registration in
+[WINDOWS.md](WINDOWS.md) (the script still defaults to highest when run from an
+elevated shell, so a profile that genuinely needs elevation is not broken
+silently). After re-registering: `RunLevel=Limited`, `UserId` = the interactive
+user, and the same session can list, kill and restart the fleet.
+
+### 13.4 Recovery from a mis-registered task needs no elevation
+
+`schtasks /end /tn DSH-Fleet` terminates the task's process tree as the owning
+user. That is what cleared the unusable elevated instance without an
+administrator prompt.
+
+### 13.5 Final verified state
+
+```
+task       DSH-Fleet   state=Running   RunLevel=Limited   trigger=AtLogOn
+action     ... -WindowStyle Hidden ... -File win-supervise-fleet.ps1
+windows    visible PowerShell windows = 0
+fleet      /ctl/health ok, plugin 0.1.1
+recovery   kill serving pid -> new pid in 10 s / 38 s (two runs)
+```
 
 ---
 
