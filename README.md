@@ -326,6 +326,23 @@ Three deployment traps, all covered in [docs/MACOS.md](docs/MACOS.md):
 
 Details: [docs/WINDOWS.md](docs/WINDOWS.md).
 
+## Agent skill
+
+[`skills/dsh-ctl/SKILL.md`](skills/dsh-ctl/SKILL.md) teaches an agent to use this
+tool without being told the commands: it covers the loopback/SSH model, how to
+survey an unfamiliar machine (process → profile → port → plugin present? → what
+supervises it), how to inspect what is running now, and the three judgements that
+follow (is it alive, is it stuck, will an injection queue or steer).
+
+The skill deliberately contains **no hostnames, addresses, users or local paths**,
+so it can be shared as-is. Which machines exist is the operator's business: it
+asks for that at run time, or reads a personal registry file outside the repo.
+
+```sh
+# after cloning, point your agent's skill directory at it
+cp -r skills/dsh-ctl ~/.agents/skills/          # or ~/.codex/skills/
+```
+
 ## Enabling SSH on the target
 
 If a machine has no SSH server yet, see [`scripts/`](scripts/) for per-platform
