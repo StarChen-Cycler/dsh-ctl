@@ -273,7 +273,7 @@ catalog, where inactive reminders remain visible but never fire again.
 
 ```json
 { "sessionId": "session-…", "title": "nightly digest", "prompt": "run the digest",
-  "daily": { "time": "20:00", "time_zone": "Asia/Shanghai" } }
+  "daily": { "time": "20:00:00", "time_zone": "Asia/Shanghai" } }
 ```
 
 Exactly one timing selector is required:
@@ -287,8 +287,12 @@ Exactly one timing selector is required:
 | `after_seconds` | number, one-shot relative delay |
 | `at` | ISO instant, or `{ date, time, time_zone }` |
 
+`time` is **`HH:mm:ss`** with optional 1–3 fractional digits. The host rejects
+`"20:00"` with `daily.time must use HH:mm:ss …` — the seconds are not optional.
+
 Omitting the selector, or sending two, returns `400` with the accepted list and
-examples. The host rejects a blank or over-120-character `title`
+examples. Everything the host validates comes back as `400` with `rejected_by:
+"host"` and the host's own message: a blank or over-120-character `title`
 (`invalid_prompt`), a session owned by a delegated subagent (`subagent_session`),
 and a recurrence faster than the minimum (`frequency_too_high`).
 

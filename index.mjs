@@ -746,7 +746,15 @@ export function apply(ctx, config = {}) {
     }
     const request = { title: body.title, prompt: body.prompt }
     request[present[0]] = body[present[0]]
-    const record = await svc.create(body.sessionId, request)
+    let record
+    try {
+      record = await svc.create(body.sessionId, request)
+    } catch (err) {
+      // The host validates the shape far more strictly than this endpoint can
+      // (time format, title length, subagent-bound sessions, rate floor). Those
+      // are caller mistakes, so surface them as 400 rather than a blanket 500.
+      return send(res, 400, { ok: false, error: String(err?.message ?? err), rejected_by: 'host' })
+    }
     send(res, 200, { ok: true, created: true, schedule: projectSchedule(record) })
   })
 
@@ -789,7 +797,12 @@ export function apply(ctx, config = {}) {
     if (typeof body.title === 'string') request.title = body.title
     if (typeof body.prompt === 'string') request.prompt = body.prompt
     if (body.change && typeof body.change === 'object') request.change = body.change
-    const value = await svc.update(request)
+    let value
+    try {
+      value = await svc.update(request)
+    } catch (err) {
+      return send(res, 400, { ok: false, error: String(err?.message ?? err), rejected_by: 'host' })
+    }
     send(res, 200, {
       ok: true,
       id: body.id,

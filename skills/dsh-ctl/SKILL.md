@@ -193,18 +193,21 @@ curl -s "http://127.0.0.1:<port>/ctl/control?ms=2000"
 
 | 选择器 | 形状 |
 |---|---|
-| `daily` | `{time, time_zone}`，如 `{"time":"20:00","time_zone":"Asia/Shanghai"}` |
+| `daily` | `{time, time_zone}`，如 `{"time":"20:00:00","time_zone":"Asia/Shanghai"}` |
 | `cron` | `{expression, time_zone}`，五段 Vixie cron |
 | `weekly` | `{time, time_zone, weekdays}`，ISO 1=周一 … 7=周日 |
 | `every_seconds` | 最小 300 |
 | `after_seconds` | 一次性相对延迟 |
 | `at` | ISO 时间，或 `{date, time, time_zone}` |
 
+**`time` 必须是 `HH:mm:ss`**（可带 1–3 位小数），写 `"20:00"` 会被宿主拒绝：
+`daily.time must use HH:mm:ss …`。
+
 ```sh
 curl -s -X POST http://127.0.0.1:17390/ctl/schedule \
   -H 'content-type: application/json' \
   -d '{"sessionId":"session-…","title":"每晚日报","prompt":"跑日报并推飞书",
-       "daily":{"time":"20:00","time_zone":"Asia/Shanghai"}}'
+       "daily":{"time":"20:00:00","time_zone":"Asia/Shanghai"}}'
 ```
 
 **返回 501 = 这个 profile 没挂载服务。** 这不是 bug，也不代表会话坏了。需要在

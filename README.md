@@ -219,20 +219,25 @@ to one session and, when due, is injected into that session as a user message �
 which wakes an idle session.
 
 ```sh
-# what is scheduled on this session
-ssh <host> 'ctl schedules --session <session-id>'
+# everything scheduled on the host, with the session each task is bound to
+ssh <host> 'curl -s http://127.0.0.1:17390/ctl/schedules?all=1'
 
-# everything on the host, with bindings
-ssh <host> 'ctl schedules --all'
+# one session's tasks
+ssh <host> 'curl -s "http://127.0.0.1:17390/ctl/schedules?sessionId=<id>"'
 
-# a daily 20:00 reminder
-ssh <host> 'ctl schedule --session <id> --title "nightly digest" \
-  --prompt "run the digest" --daily 20:00 --tz Asia/Shanghai'
+# a daily 20:00 reminder (time is HH:mm:ss — "20:00" is rejected by the host)
+ssh <host> 'curl -s -X POST http://127.0.0.1:17390/ctl/schedule \
+  -H "content-type: application/json" \
+  -d "{\"sessionId\":\"<id>\",\"title\":\"nightly digest\",\"prompt\":\"run the digest\",\"daily\":{\"time\":\"20:00:00\",\"time_zone\":\"Asia/Shanghai\"}}"'
 ```
+
+The `scripts/ctl.sh` / `scripts/ctl.ps1` helpers cover the session routes only, not
+schedule — use `curl` (or any HTTP client) for these.
 
 Timing selectors are mutually exclusive: `daily {time, time_zone}`,
 `cron {expression, time_zone}`, `weekly {time, time_zone, weekdays}`,
-`every_seconds`, `after_seconds`, or `at`.
+`every_seconds`, `after_seconds`, or `at`. `time` is `HH:mm:ss` with optional
+1–3 fractional digits; `"20:00"` is rejected.
 
 **These routes return `501` unless the profile mounts the service.** The packages
 are ordinary dependencies, not bundles, so `dsh plugin add` cannot wire them in —
