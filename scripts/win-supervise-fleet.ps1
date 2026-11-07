@@ -91,13 +91,25 @@ while ($true) {
         Write-Log 'control plane not answering; starting launcher'
         try { Start-Launcher } catch { Write-Log "launcher start failed: $($_.Exception.Message)" }
 
-        $recovered = $false
+        # Wait for it to come up, but stop waiting the moment it came up and then
+        # died again. Without that, a server that starts and immediately crashes
+        # keeps the supervisor inside the grace window for its whole duration,
+        # which delays recovery by up to StartupGraceSeconds.
+        $everUp = $false
         $deadline = (Get-Date).AddSeconds($StartupGraceSeconds)
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 3
-            if (Test-FleetHealth) { $recovered = $true; break }
+            $healthy = Test-FleetHealth
+            if ($healthy) {
+                $everUp = $true
+                continue
+            }
+            if ($everUp) {
+                Write-Log 'came up and went down again during startup; restarting now'
+                break
+            }
         }
-        if ($recovered) { Write-Log 'control plane is up' }
+        if ($everUp) { Write-Log 'control plane is up' }
         else { Write-Log "still not answering after ${StartupGraceSeconds}s; will retry" }
     }
 
