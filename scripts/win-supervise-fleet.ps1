@@ -35,6 +35,22 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Hide our own console window. -WindowStyle Hidden on the task action is the
+# primary mechanism, but it only takes effect the next time the task action is
+# registered; doing it from inside means any launch - task, shortcut, another
+# script - leaves no window on the desktop. Best effort: a host without its own
+# console simply has nothing to hide.
+try {
+    Add-Type -Namespace DshCtl -Name ConsoleWindow -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'@ -ErrorAction Stop
+    $handle = [DshCtl.ConsoleWindow]::GetConsoleWindow()
+    if ($handle -ne [IntPtr]::Zero) { $null = [DshCtl.ConsoleWindow]::ShowWindow($handle, 0) }
+} catch {
+    Write-Verbose "could not hide the console window: $($_.Exception.Message)"
+}
+
 $launcher = Join-Path $PSScriptRoot 'fleet-run.ps1'
 if (-not (Test-Path $launcher)) { throw "missing launcher: $launcher" }
 

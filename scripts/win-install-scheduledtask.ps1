@@ -91,6 +91,19 @@ if (-not (Test-Path $supervisor)) { throw "missing supervisor: $supervisor" }
 $elevated = Test-Admin
 
 Write-Host "== registering task $TaskName =="
+# Stop whatever is already supervising before replacing the action. A supervisor
+# left over from a previous registration keeps holding the single-instance mutex,
+# so a newly started task instance would exit immediately and the old action
+# (for example one without -WindowStyle Hidden) would keep running.
+try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
+Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match 'win-supervise-fleet\.ps1' -and $_.ProcessId -ne $PID } |
+    ForEach-Object {
+        Write-Host ("  stopping previous supervisor (pid {0})" -f $_.ProcessId)
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+Start-Sleep -Seconds 2
+
 # -WindowStyle Hidden is what keeps the supervisor off the desktop. Task
 # Scheduler starts the process through a console host, and without this flag a
 # visible console window appears at logon and stays for the life of the task -
