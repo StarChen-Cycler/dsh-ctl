@@ -1,25 +1,36 @@
 <#
 .SYNOPSIS
-    Supervise the fleet server: run it, and restart it whenever it exits.
+    Supervise the fleet server by probing its control plane, not by waiting on a
+    child process.
 
 .DESCRIPTION
-    Windows Task Scheduler has no direct equivalent of launchd's KeepAlive, so
-    this loop supplies it. The scheduled task runs this script once; the script
-    keeps dsh alive for as long as the task is allowed to run.
+    The Windows counterpart of launchd's KeepAlive.
 
-    Restart delay is fixed and short (default 5 s) so a crash loop cannot spin
-    but a transient failure recovers quickly — the same intent as launchd's
-    ThrottleInterval.
+    An earlier version ran the launcher synchronously and restarted when it
+    exited:
 
-    Do not run this in a foreground terminal you intend to Ctrl-C: stop the
-    scheduled task instead (win-install-scheduledtask.ps1 -Uninstall).
+        & powershell.exe -File fleet-run.ps1 *>> $log
+
+    That blocks for as long as the child lives, and it stays blocked if the child
+    wedges — observed in practice as "kill the server, nothing ever comes back"
+    while the supervisor process was still alive. Supervising on *health* avoids
+    the whole class: the loop never waits on a child, it just asks the control
+    plane whether something is answering and starts a launcher when nothing is.
+
+    Logs are split so neither stream clobbers the other:
+      %USERPROFILE%\dsh-fleet-supervisor.log   this loop
+      %USERPROFILE%\dsh-fleet.log              the current dsh process
 
 .PARAMETER RestartDelaySeconds
-    Wait between restarts (default 5).
+    Pause between health probes (default 10).
+
+.PARAMETER StartupGraceSeconds
+    How long to give a freshly started launcher before probing again (default 60).
 #>
 [CmdletBinding()]
 param(
-    [int]$RestartDelaySeconds = 5
+    [int]$RestartDelaySeconds = 10,
+    [int]$StartupGraceSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,25 +38,19 @@ $ErrorActionPreference = 'Stop'
 $launcher = Join-Path $PSScriptRoot 'fleet-run.ps1'
 if (-not (Test-Path $launcher)) { throw "missing launcher: $launcher" }
 
-$log = if ($env:DSH_FLEET_LOG) { $env:DSH_FLEET_LOG } else { Join-Path $env:USERPROFILE 'dsh-fleet.log' }
+$port = if ($env:DSH_FLEET_PORT) { [int]$env:DSH_FLEET_PORT } else { 17390 }
+$logFile = if ($env:DSH_FLEET_LOG) { $env:DSH_FLEET_LOG } else { Join-Path $env:USERPROFILE 'dsh-fleet.log' }
+$supLog = Join-Path $env:USERPROFILE 'dsh-fleet-supervisor.log'
 
-# Only one supervisor may run. Two of them would race to restart dsh and fight
-# over the listen port. A named mutex makes that impossible, so starting the
-# task twice (or a task plus a manual run) is harmless.
-#
-# Scope is Local\, not Global\: Global\ needs SeCreateGlobalPrivilege, and an
-# unelevated shell throws on construction — which would kill the supervisor
-# before it ever started dsh. Everything here lives in one user session anyway.
+# Only one supervisor may run; two would race to start servers on one port.
+# Local\ rather than Global\: Global\ needs SeCreateGlobalPrivilege and throws
+# for an unelevated shell, which would kill the supervisor before it started.
 $acquired = $true
 try {
     $mutex = New-Object System.Threading.Mutex($false, 'Local\DSH-Fleet-Supervisor')
-    try {
-        $acquired = $mutex.WaitOne(0)
-    } catch [System.Threading.AbandonedMutexException] {
-        $acquired = $true
-    }
+    try { $acquired = $mutex.WaitOne(0) }
+    catch [System.Threading.AbandonedMutexException] { $acquired = $true }
 } catch {
-    # Could not create or acquire the mutex: proceed rather than refuse to run.
     Write-Host "supervisor: mutex unavailable ($($_.Exception.Message)); continuing without it"
     $acquired = $true
 }
@@ -58,27 +63,43 @@ function Write-Log {
     param([string]$Message)
     $line = '{0} [supervisor] {1}' -f (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'), $Message
     Write-Host $line
-    Add-Content -Path $log -Value $line -ErrorAction SilentlyContinue
+    Add-Content -Path $supLog -Value $line -ErrorAction SilentlyContinue
 }
 
-Write-Log "supervisor start (pid $PID)"
+function Test-FleetHealth {
+    try {
+        $r = Invoke-RestMethod -Uri "http://127.0.0.1:$port/ctl/health" -TimeoutSec 5
+        return ($r.ok -eq $true)
+    } catch {
+        return $false
+    }
+}
+
+function Start-Launcher {
+    Start-Process -FilePath 'powershell.exe' `
+        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcher `
+        -WindowStyle Hidden `
+        -WorkingDirectory $env:USERPROFILE `
+        -RedirectStandardOutput $logFile `
+        -RedirectStandardError "$logFile.err" | Out-Null
+}
+
+Write-Log "supervisor start (pid $PID, port $port, probe every ${RestartDelaySeconds}s)"
 
 while ($true) {
-    Write-Log 'starting fleet-run.ps1'
-    $started = Get-Date
-    try {
-        # -WorkingDirectory matters: dsh refuses to boot from a directory whose
-        # .env sets DEEPSEEK_BASE_URL, so never inherit an arbitrary cwd here.
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher *>> $log
-        $code = $LASTEXITCODE
-    } catch {
-        Write-Log "launcher threw: $($_.Exception.Message)"
-        $code = -1
+    if (-not (Test-FleetHealth)) {
+        Write-Log 'control plane not answering; starting launcher'
+        try { Start-Launcher } catch { Write-Log "launcher start failed: $($_.Exception.Message)" }
+
+        $recovered = $false
+        $deadline = (Get-Date).AddSeconds($StartupGraceSeconds)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            if (Test-FleetHealth) { $recovered = $true; break }
+        }
+        if ($recovered) { Write-Log 'control plane is up' }
+        else { Write-Log "still not answering after ${StartupGraceSeconds}s; will retry" }
     }
 
-    $ranFor = (Get-Date) - $started
-    Write-Log ("fleet-run.ps1 exited code={0} after {1:n0}s" -f $code, $ranFor.TotalSeconds)
-
     Start-Sleep -Seconds $RestartDelaySeconds
-    Write-Log 'restarting'
 }
