@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto'
 export const name = 'dsh-ctl'
 export const inject = ['webServer', 'sessionController']
 
-export const VERSION = '0.1.1'
+export const VERSION = '0.1.2'
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 /** JSON response helper. */
@@ -268,10 +268,14 @@ export function apply(ctx, config = {}) {
         'GET  /ctl/control?ms=&raw=1',
         'GET  /ctl/inspect?id=',
         'GET  /ctl/tail?sessionId=&frames=&ms=',
+        'GET  /ctl/schedules?sessionId=   (or all=1 for the whole host)',
         'POST /ctl/create   {cwd?}',
         'POST /ctl/prompt   {sessionId, text, mode?}',
         'POST /ctl/cancel   {sessionId}',
         'POST /ctl/rename   {sessionId, title}',
+        'POST /ctl/schedule {sessionId, title, prompt, daily|cron|weekly|every_seconds|at|after_seconds}',
+        'POST /ctl/schedule/update {sessionId, id, title?, prompt?, change?}',
+        'POST /ctl/schedule/delete {sessionId, id}',
       ],
     }),
   )
@@ -633,5 +637,165 @@ export function apply(ctx, config = {}) {
     if (typeof body.title !== 'string') return send(res, 400, { ok: false, error: 'title must be a string' })
     const value = await controller.rename({ sessionId: body.sessionId, title: body.title })
     send(res, 200, { ok: true, renamed: true, value: typeof value?.title === 'string' ? value.title : null })
+  })
+
+  /* ------------------------------------------------------------------ *
+   * Schedule (durable reminders)
+   *
+   * `schedule` is deliberately NOT in `inject`: the service exists only when the
+   * profile mounts @deepseek-ai/dsh-schedule, and a required inject would stop
+   * this whole plugin from loading on a host that does not. ctx.get() answers
+   * undefined instead of throwing, which is what the 501 path below needs.
+   *
+   * That package declares no dsh.bundle, so it cannot go into package.json's
+   * dsh.profile.bundles — it is inserted through the profile's
+   * cordis.patch.yml. On 0.2.x the model-facing tools live in a second package,
+   * @deepseek-ai/dsh-tool-schedule.
+   * ------------------------------------------------------------------ */
+
+  const TIMING_KEYS = ['after_seconds', 'at', 'every_seconds', 'daily', 'weekly', 'cron']
+
+  function scheduleService(res) {
+    const svc = typeof ctx.get === 'function' ? ctx.get('schedule') : undefined
+    if (!svc || typeof svc.create !== 'function') {
+      send(res, 501, {
+        ok: false,
+        error: 'the schedule service is not mounted in this profile',
+        hint:
+          'Insert {"id":"schedule","name":"@deepseek-ai/dsh-schedule"} into the profile cordis.patch.yml and restart. For the model-facing tools (schedule_create and friends) also insert @deepseek-ai/dsh-tool-schedule: on 0.2.x they are separate packages, and neither can live in dsh.profile.bundles.',
+      })
+      return null
+    }
+    return svc
+  }
+
+  /** Leaf scalars only, same rule as the session projection. */
+  function projectSchedule(record) {
+    if (!record || typeof record !== 'object') return null
+    const out = {
+      id: typeof record.id === 'string' ? record.id : null,
+      kind: typeof record.kind === 'string' ? record.kind : null,
+      title: typeof record.title === 'string' ? record.title : null,
+      prompt: typeof record.prompt === 'string' ? record.prompt : null,
+      scheduledAt: typeof record.scheduledAt === 'string' ? record.scheduledAt : null,
+    }
+    if (typeof record.time === 'string') out.time = record.time
+    if (typeof record.timeZone === 'string') out.timeZone = record.timeZone
+    if (Array.isArray(record.weekdays)) out.weekdays = record.weekdays.slice()
+    if (typeof record.expression === 'string') out.expression = record.expression
+    if (typeof record.afterSeconds === 'number') out.afterSeconds = record.afterSeconds
+    if (typeof record.sessionId === 'string') out.sessionId = record.sessionId
+    if (record.status === 'active' || record.status === 'inactive') out.status = record.status
+    if (record.state === 'scheduled' || record.state === 'overdue') out.state = record.state
+    else if (out.scheduledAt) out.state = Date.parse(out.scheduledAt) > Date.now() ? 'scheduled' : 'overdue'
+    return out
+  }
+
+  // GET /ctl/schedules?sessionId=<id>   one session's tasks
+  // GET /ctl/schedules?all=1            every reminder on this host, with bindings
+  route('/ctl/schedules', async (req, res) => {
+    const svc = scheduleService(res)
+    if (!svc) return
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const sessionId = url.searchParams.get('sessionId')
+    const all = url.searchParams.get('all') === '1'
+    if (all) {
+      if (typeof svc.catalog !== 'function') {
+        return send(res, 501, { ok: false, error: 'this host exposes no schedule catalog()' })
+      }
+      const rows = await svc.catalog()
+      return send(res, 200, { ok: true, scope: 'host', count: rows.length, items: rows.map(projectSchedule) })
+    }
+    if (!sessionId) {
+      return send(res, 400, { ok: false, error: 'sessionId is required (or pass all=1 for the whole host)' })
+    }
+    const rows = await svc.list({ sessionId })
+    send(res, 200, { ok: true, scope: 'session', sessionId, count: rows.length, items: rows.map(projectSchedule) })
+  })
+
+  // POST /ctl/schedule {sessionId, title, prompt, + exactly one timing selector}
+  route('/ctl/schedule', async (req, res) => {
+    if (!requirePost(req, res)) return
+    const svc = scheduleService(res)
+    if (!svc) return
+    const body = await readJson(req)
+    if (typeof body.sessionId !== 'string' || body.sessionId === '') {
+      return send(res, 400, { ok: false, error: 'sessionId is required' })
+    }
+    if (typeof body.title !== 'string' || body.title.trim() === '') {
+      return send(res, 400, { ok: false, error: 'title is required and must not be blank' })
+    }
+    if (typeof body.prompt !== 'string' || body.prompt.trim() === '') {
+      return send(res, 400, { ok: false, error: 'prompt is required and must not be blank' })
+    }
+    const present = TIMING_KEYS.filter((k) => body[k] !== undefined && body[k] !== null)
+    if (present.length !== 1) {
+      return send(res, 400, {
+        ok: false,
+        error: 'exactly one timing selector is required',
+        selectors: TIMING_KEYS,
+        received: present,
+        examples: {
+          daily: { daily: { time: '20:00', time_zone: 'Asia/Shanghai' } },
+          cron: { cron: { expression: '0 20 * * *', time_zone: 'Asia/Shanghai' } },
+          weekly: { weekly: { time: '09:30', time_zone: 'Asia/Shanghai', weekdays: [1, 3, 5] } },
+          every_seconds: { every_seconds: 900 },
+          after_seconds: { after_seconds: 60 },
+        },
+      })
+    }
+    const request = { title: body.title, prompt: body.prompt }
+    request[present[0]] = body[present[0]]
+    const record = await svc.create(body.sessionId, request)
+    send(res, 200, { ok: true, created: true, schedule: projectSchedule(record) })
+  })
+
+  // POST /ctl/schedule/delete {sessionId, id}
+  route('/ctl/schedule/delete', async (req, res) => {
+    if (!requirePost(req, res)) return
+    const svc = scheduleService(res)
+    if (!svc) return
+    const body = await readJson(req)
+    if (typeof body.sessionId !== 'string' || body.sessionId === '') {
+      return send(res, 400, { ok: false, error: 'sessionId is required' })
+    }
+    if (typeof body.id !== 'string' || body.id === '') {
+      return send(res, 400, { ok: false, error: 'id is required' })
+    }
+    const value = await svc.delete({ sessionId: body.sessionId, id: body.id })
+    send(res, 200, { ok: true, id: body.id, deleted: value?.deleted === true, code: value?.code ?? null })
+  })
+
+  // POST /ctl/schedule/update {sessionId, id, title?, prompt?, change?}
+  // The service is compare-and-update: it wants the record you observed. Read it
+  // first so callers do not have to round-trip the whole record themselves.
+  route('/ctl/schedule/update', async (req, res) => {
+    if (!requirePost(req, res)) return
+    const svc = scheduleService(res)
+    if (!svc) return
+    const body = await readJson(req)
+    if (typeof body.sessionId !== 'string' || body.sessionId === '') {
+      return send(res, 400, { ok: false, error: 'sessionId is required' })
+    }
+    if (typeof body.id !== 'string' || body.id === '') {
+      return send(res, 400, { ok: false, error: 'id is required' })
+    }
+    const rows = await svc.list({ sessionId: body.sessionId })
+    const expected = rows.find((r) => r?.id === body.id)
+    if (!expected) {
+      return send(res, 404, { ok: false, error: 'schedule not found in that session', id: body.id })
+    }
+    const request = { sessionId: body.sessionId, id: body.id, expected }
+    if (typeof body.title === 'string') request.title = body.title
+    if (typeof body.prompt === 'string') request.prompt = body.prompt
+    if (body.change && typeof body.change === 'object') request.change = body.change
+    const value = await svc.update(request)
+    send(res, 200, {
+      ok: true,
+      id: body.id,
+      updated: value?.updated === true,
+      code: value?.code ?? null,
+      schedule: value?.record ? projectSchedule(value.record) : null,
+    })
   })
 }

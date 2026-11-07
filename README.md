@@ -170,6 +170,10 @@ claims the message — so `control` (live state) is where you watch them, not `t
 | POST | `/ctl/prompt` | `{ sessionId, text, mode?, requestId? }` — `mode`: `queue`/`steer` |
 | POST | `/ctl/cancel` | `{ sessionId }` |
 | POST | `/ctl/rename` | `{ sessionId, title }` |
+| GET | `/ctl/schedules?sessionId=` | durable reminders bound to one session; `?all=1` lists every reminder on the host with its binding |
+| POST | `/ctl/schedule` | `{ sessionId, title, prompt, daily\|cron\|weekly\|every_seconds\|at\|after_seconds }` — exactly one timing selector |
+| POST | `/ctl/schedule/update` | `{ sessionId, id, title?, prompt?, change? }` |
+| POST | `/ctl/schedule/delete` | `{ sessionId, id }` |
 | GET | `/ctl/debug/shape?sessionId=&type=` | read-only schema introspection (see below) |
 
 Full request/response shapes: [docs/API.md](docs/API.md).
@@ -206,6 +210,47 @@ Use instead:
 `/ctl/control` also reports `lastEventSeq`, but it is a **flush cursor**: it can sit
 still for seconds while the agent is working, so a changing value proves progress
 and an unchanged value proves nothing.
+
+## Schedules (durable reminders)
+
+`/ctl/schedules` and friends drive the host's `ctx.schedule` service. This is the
+same mechanism the model-facing `schedule_create` tool uses: a reminder is bound
+to one session and, when due, is injected into that session as a user message —
+which wakes an idle session.
+
+```sh
+# what is scheduled on this session
+ssh <host> 'ctl schedules --session <session-id>'
+
+# everything on the host, with bindings
+ssh <host> 'ctl schedules --all'
+
+# a daily 20:00 reminder
+ssh <host> 'ctl schedule --session <id> --title "nightly digest" \
+  --prompt "run the digest" --daily 20:00 --tz Asia/Shanghai'
+```
+
+Timing selectors are mutually exclusive: `daily {time, time_zone}`,
+`cron {expression, time_zone}`, `weekly {time, time_zone, weekdays}`,
+`every_seconds`, `after_seconds`, or `at`.
+
+**These routes return `501` unless the profile mounts the service.** The packages
+are ordinary dependencies, not bundles, so `dsh plugin add` cannot wire them in —
+it even warns "declares no dsh.bundle". Insert them in the profile's
+`cordis.patch.yml` instead:
+
+```yaml
+- insert:
+    - id: schedule
+      name: '@deepseek-ai/dsh-schedule'
+    - id: schedule-tools          # model-facing tools, separate package on 0.2.x
+      name: '@deepseek-ai/dsh-tool-schedule'
+```
+
+Restart afterwards: an already-open session keeps the tool set it was built with.
+The service enforces a 300 s minimum interval, and a task bound to a session owned
+by a delegated subagent is rejected (`subagent_session`) because delivery could
+never reach it.
 
 ## Security model
 

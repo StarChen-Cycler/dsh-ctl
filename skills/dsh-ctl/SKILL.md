@@ -172,6 +172,10 @@ curl -s "http://127.0.0.1:<port>/ctl/control?ms=2000"
 | 改名 | `POST /ctl/rename {sessionId, title}` |
 | 字段对不上时探形状 | `GET /ctl/debug/shape?sessionId=…&type=…` |
 | 实时队列与统计 | `GET /ctl/control?ms=2000`（**每次开流并阻塞，不要高频调**） |
+| 这台机器上所有定时任务 | `GET /ctl/schedules?all=1` |
+| 某会话的定时任务 | `GET /ctl/schedules?sessionId=…` |
+| 建定时任务 | `POST /ctl/schedule {sessionId, title, prompt, + 一个时间选择器}` |
+| 改 / 删 | `POST /ctl/schedule/update` / `POST /ctl/schedule/delete` |
 
 仓库里的 `scripts/ctl.sh`（POSIX）和 `scripts/ctl.ps1`（Windows）已经包好了 JSON 转义
 和 URL 引号，优先用它们，别手拼 `curl`。
@@ -179,6 +183,52 @@ curl -s "http://127.0.0.1:<port>/ctl/control?ms=2000"
 **Windows 远程特别注意**：默认 shell 是 `cmd.exe`，会吃掉 URL 里的 `?` 和 `&`，
 `curl http://…/ctl/sessions?limit=5` 会静默返回空。把命令写成 `.ps1` 传过去执行，
 或者用 `scripts/ctl.ps1`。
+
+### 5.1 定时任务（schedule）
+
+这是宿主的 `ctx.schedule` 服务，和模型自己的 `schedule_create` 工具是同一套东西：
+任务绑在一个会话上，到点以 user 消息**注入该会话**，所以能唤醒空闲会话。
+
+时间选择器**必须且只能给一个**：
+
+| 选择器 | 形状 |
+|---|---|
+| `daily` | `{time, time_zone}`，如 `{"time":"20:00","time_zone":"Asia/Shanghai"}` |
+| `cron` | `{expression, time_zone}`，五段 Vixie cron |
+| `weekly` | `{time, time_zone, weekdays}`，ISO 1=周一 … 7=周日 |
+| `every_seconds` | 最小 300 |
+| `after_seconds` | 一次性相对延迟 |
+| `at` | ISO 时间，或 `{date, time, time_zone}` |
+
+```sh
+curl -s -X POST http://127.0.0.1:17390/ctl/schedule \
+  -H 'content-type: application/json' \
+  -d '{"sessionId":"session-…","title":"每晚日报","prompt":"跑日报并推飞书",
+       "daily":{"time":"20:00","time_zone":"Asia/Shanghai"}}'
+```
+
+**返回 501 = 这个 profile 没挂载服务。** 这不是 bug，也不代表会话坏了。需要在
+profile 的 `cordis.patch.yml` 里插入两行（`dsh-schedule` 提供宿主服务，
+`dsh-tool-schedule` 提供模型可见的工具；0.2.x 起是两个包），然后**重启**——
+重启后**只有新建的会话**才带 `schedule_create` 工具，已经开着的会话还是旧工具集。
+
+挂载要点：这两个包都**没有 `dsh.bundle`**，`dsh plugin add` 只会装成普通依赖并警告
+"declares no dsh.bundle"，它们进不了 `dsh.profile.bundles`。
+
+```yaml
+- insert:
+    - id: schedule
+      name: '@deepseek-ai/dsh-schedule'
+    - id: schedule-tools
+      name: '@deepseek-ai/dsh-tool-schedule'
+```
+
+改完先用 `dsh fleet --dump-config` 验证组合能解析（退出码 0 且能看到
+`id: schedule`），再重启。**注意**：Windows 上 `schtasks /end` 只停守护进程，
+不会杀掉已经 detach 的 node，必须杀掉 `/ctl/health` 里的 pid 才会真正重载配置。
+
+几条宿主侧的硬规则：`title` 不能为空且不超过 120 字符；被 subagent 拥有的会话
+不能建任务（`subagent_session`，投递永远到不了）；最小间隔 300 秒。
 
 ## 6. 两条硬约束
 

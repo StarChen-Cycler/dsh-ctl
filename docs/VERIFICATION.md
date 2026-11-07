@@ -495,6 +495,80 @@ recovery   kill serving pid -> new pid in 10 s / 38 s (two runs)
 
 ---
 
+## 14. Schedule routes (0.1.2)
+
+`/ctl/schedules`, `/ctl/schedule`, `/ctl/schedule/update` and
+`/ctl/schedule/delete` drive the host's `ctx.schedule` service, the same one the
+model-facing `schedule_create` tool uses.
+
+### 14.1 The service is optional, and Cordis enforces it
+
+Accessing `ctx.schedule` on a plugin that does not inject `schedule` throws at
+request time: `cannot get property "schedule" without inject`. Adding it to
+`inject` is the wrong fix — `inject` is a load requirement, so the whole plugin
+would stop loading on any host whose profile does not mount the service.
+
+`ctx.get('schedule')` answers `undefined` instead, which the routes turn into a
+`501` carrying the exact `cordis.patch.yml` rows needed. Verified on a host with
+the service mounted (all routes answer) and reasoned from the runtime error for
+the unmounted case.
+
+### 14.2 Mounting is a composition edit, not a plugin install
+
+`dsh plugin --profile <p> add @deepseek-ai/dsh-schedule` installs the package and
+then warns:
+
+```
+@deepseek-ai/dsh-schedule declares no dsh.bundle — installed as a plain
+dependency, not a profile layer
+```
+
+So it never reaches `dsh.profile.bundles`. It has to be inserted in the profile's
+`cordis.patch.yml`. On 0.2.x the model-facing tools live in a *second* package,
+`@deepseek-ai/dsh-tool-schedule`; the older 0.1.5 line registered them from
+`dsh-schedule` itself, which is why the `web` profile mounts only one row.
+
+Verification gate: `dsh fleet --dump-config` must exit 0 and show both
+`id: schedule` and `id: tool-schedule`. A bad patch fails here instead of during
+a restart.
+
+Restarting needs care on Windows: `schtasks /end` stops the supervisor but not the
+already-detached `node`, so the old process keeps serving the port with the old
+composition. Kill the pid `/ctl/health` reports instead.
+
+### 14.3 Endpoints, exercised against a live host
+
+| call | result |
+|---|---|
+| `GET /ctl/schedules?all=1` | `scope=host count=1`, the existing daily 20:00 reminder with its binding |
+| `GET /ctl/schedules?sessionId=…` | `count=1`, same task |
+| `POST /ctl/schedule` `after_seconds=86400` | `created=true`, `kind=after`, `state=scheduled` |
+| `POST /ctl/schedule/update` (rename + `kind=every`, 2 days) | `updated=true`, new title, `kind=every` |
+| `POST /ctl/schedule/delete` | `deleted=true` |
+| `GET` again | back to `count=1` — only the real reminder, the test row is gone |
+| `POST /ctl/schedule` with no timing selector | `400`, `selectors` list and examples returned |
+| `POST /ctl/schedule/delete` with an unknown id | `delete` returned `deleted=false code=schedule_not_found` |
+
+### 14.4 Two authoring hazards that cost time here
+
+**UTF-8 BOM.** Rewriting `package.json` with PowerShell 5.1's
+`Set-Content -Encoding UTF8` prefixes a BOM. The loader then reports
+
+```
+skipping profile bundle "dsh-ctl": SyntaxError: Unexpected token '锘?…
+```
+
+i.e. the plugin silently does not load, `/ctl` answers 404, and the supervisor
+keeps restarting a server that looks broken. Write files as UTF-8 **without** BOM
+(`[IO.File]::WriteAllText(path, text, UTF8Encoding($false))`).
+
+**Silent mojibake from `Get-Content -Raw`.** The same round trip decodes non-ASCII
+as the ANSI code page and re-encodes as UTF-8, turning Chinese comments into
+`鈥?`. Both were repaired by restoring from git and re-applying edits with a
+BOM-aware editor rather than text pipelines.
+
+---
+
 ## Known unverified
 
 - **Queue placement on 0.2.1-rc.5.** Accepted but not observable: the host no longer

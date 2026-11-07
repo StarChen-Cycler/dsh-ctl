@@ -242,6 +242,80 @@ It reports paths only — it never returns a full message body.
 
 ---
 
+## `GET /ctl/schedules?sessionId=<id>` (or `?all=1`)
+
+Durable reminders stored by the host's `ctx.schedule` service. `?sessionId=` reads
+one session's tasks; `?all=1` returns the whole host's catalog, each entry
+carrying the session it is bound to.
+
+```json
+{
+  "ok": true, "scope": "host", "count": 1,
+  "items": [
+    { "id": "schedule-9c2d1bfb-…", "kind": "daily",
+      "title": "nightly digest", "prompt": "run the digest",
+      "time": "20:00:00.000", "timeZone": "Asia/Shanghai",
+      "scheduledAt": "2026-11-08T12:00:00.000Z",
+      "sessionId": "session-…", "status": "active", "state": "scheduled" }
+  ]
+}
+```
+
+`state` is `scheduled` or `overdue`, derived from `scheduledAt` and the clock on
+this endpoint's side. `status` (`active`/`inactive`) only appears in the host
+catalog, where inactive reminders remain visible but never fire again.
+
+**`501` means the profile does not mount the service.** See the README section
+"Schedules" for the two `cordis.patch.yml` rows; neither package declares
+`dsh.bundle`, so they cannot live in `dsh.profile.bundles`.
+
+## `POST /ctl/schedule`
+
+```json
+{ "sessionId": "session-…", "title": "nightly digest", "prompt": "run the digest",
+  "daily": { "time": "20:00", "time_zone": "Asia/Shanghai" } }
+```
+
+Exactly one timing selector is required:
+
+| selector | shape |
+|---|---|
+| `daily` | `{ time, time_zone }` |
+| `cron` | `{ expression, time_zone }` — five-field Vixie cron |
+| `weekly` | `{ time, time_zone, weekdays }` — ISO 1=Mon … 7=Sun |
+| `every_seconds` | number, minimum 300 |
+| `after_seconds` | number, one-shot relative delay |
+| `at` | ISO instant, or `{ date, time, time_zone }` |
+
+Omitting the selector, or sending two, returns `400` with the accepted list and
+examples. The host rejects a blank or over-120-character `title`
+(`invalid_prompt`), a session owned by a delegated subagent (`subagent_session`),
+and a recurrence faster than the minimum (`frequency_too_high`).
+
+## `POST /ctl/schedule/update`
+
+```json
+{ "sessionId": "session-…", "id": "schedule-…",
+  "title": "new name", "change": { "kind": "cron",
+    "cron": { "expression": "0 21 * * *", "time_zone": "Asia/Shanghai" } } }
+```
+
+The host's update is compare-and-update: it commits only if the record you
+observed is still current. Rather than making callers round-trip the whole
+record, this endpoint reads it (`list`) and passes it as `expected`, so the
+comparison still happens host-side. `ok: true` with `updated: false` plus
+`code: schedule_conflict` means the task changed between the read and the write —
+retry.
+
+## `POST /ctl/schedule/delete`
+
+```json
+{ "sessionId": "session-…", "id": "schedule-…" }
+```
+
+`{ "ok": true, "deleted": true }`, or `deleted: false` with
+`code: "schedule_not_found"`. Queued inbox messages are left intact.
+
 ## Error shape
 
 Every failure uses the same envelope:
