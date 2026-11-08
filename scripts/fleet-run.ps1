@@ -114,6 +114,14 @@ Set-Location $HOME
 # URL appears write it to its own file that a relaunch cannot clobber.
 $urlFile = if ($env:DSH_FLEET_URL_FILE) { $env:DSH_FLEET_URL_FILE } else { Join-Path $HOME 'dsh-fleet.url' }
 
+# dsh writes loader warnings to stderr. In this pipeline each stderr line becomes
+# an ErrorRecord, and the script-wide `$ErrorActionPreference = 'Stop'` above turns
+# the first one into a terminating error — the launcher dies before the server is
+# up, and the supervisor retries forever ("still not answering after 60s"). Keep
+# this one invocation non-terminating: stderr is diagnostic here, not a failure
+# signal, and the exit code below still reflects the real outcome.
+$ErrorActionPreference = 'Continue'
+
 & $dshPath $Profile --port $Port --no-open 2>&1 | ForEach-Object {
     $line = [string]$_
     if ($line -match 'http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+') {
