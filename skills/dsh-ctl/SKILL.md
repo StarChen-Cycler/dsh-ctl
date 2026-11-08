@@ -166,7 +166,8 @@ curl -s "http://127.0.0.1:<port>/ctl/control?ms=2000"
 | 谁在跑 | `GET /ctl/sessions?running=1` |
 | 看某会话最近说了什么 | `GET /ctl/tail?sessionId=…`（含 `seq` / `time` / `type` / `text`） |
 | 不唤醒 agent 看持久状态 | `GET /ctl/inspect?id=…` |
-| 新建会话 | `POST /ctl/create {cwd}` |
+| 新建会话 | `POST /ctl/create {cwd, preset?}`（见 5.2） |
+| 有哪些权限预设 | `GET /ctl/presets` |
 | 注入 | `POST /ctl/prompt {sessionId, text, mode?}` |
 | 停当前轮 | `POST /ctl/cancel {sessionId}` |
 | 改名 | `POST /ctl/rename {sessionId, title}` |
@@ -232,6 +233,62 @@ profile 的 `cordis.patch.yml` 里插入两行（`dsh-schedule` 提供宿主服�
 
 几条宿主侧的硬规则：`title` 不能为空且不超过 120 字符；被 subagent 拥有的会话
 不能建任务（`subagent_session`，投递永远到不了）；最小间隔 300 秒。
+
+### 5.2 新建会话时指定权限（preset）
+
+宿主的 `session.create` **只接受三个字段**：`sessionId`（复用空白会话）、`cwd`
+（或 `workspaceId`）、`agentPreset`（cordis / octie 那种 agent 预设，**不是权限**）。
+它**没有权限字段**——新会话的沙箱与审批策略一律继承进程启动时的
+`DSH_PERMISSION_MODE`，所以默认总是 `workspace-write`。
+
+dsh-ctl 在创建后补写三条持久事件来钉死权限：
+
+```jsonc
+// POST /ctl/create
+{"cwd": "E:\\some\\workspace", "preset": "danger-full-access"}
+// → {"ok":true,"sessionId":"session-…",
+//    "preset":{"preset":"danger-full-access","sandbox":"danger-full-access","approval":"never"}}
+```
+
+可用的预设随 profile 组合变化，用 `GET /ctl/presets` 现场查。常见三个：
+
+| preset | sandbox | approval | 什么时候用 |
+|---|---|---|---|
+| `read-only` | read-only | ask | 只想让它看，不许动手 |
+| `workspace-write` | workspace-write | ask | 默认值，只在自己的工作目录里写 |
+| `danger-full-access` | danger-full-access | never | 需要读别的盘、或无人值守时没人在场批准 |
+
+**看日志时会看到两组事件，这是正常的**：
+
+```
+events.0/1/2  permission/preset / sandbox/mode / approval/policy  ← workspace-write（host 创建时钉的）
+events.3/4/5  同样三件                                            ← 你指定的 preset（插件补的）
+```
+
+权限折叠是**最后一条生效**（last-wins），所以实际生效的是你指定的那个。
+不要因为 `events.0` 还是 workspace-write 就以为没成功——看最后三条。
+
+**非法预设名不会失败**，返回 200 并带 `presetError`：
+
+```jsonc
+{"ok":true,"sessionId":"…","preset":null,
+ "presetError":"permission: unknown preset \"bogus\" (known: read-only, workspace-write, danger-full-access)"}
+```
+
+原因：会话已经建出来了，返回错误码会诱导调用方重试，每试一次多漏一个会话。
+**拿到 `presetError` 就停手，不要重试。**
+
+**为什么不直接调 `permissionPresets.apply()`**：`apply(session, name, setApproval)` 的
+第三个参数要改一个**活着的 Agent** 的审批策略，而创建路由手上只有 Session。
+补写的那三条事件正是 `apply()` 内部做的事。
+
+**安全边界**：有了这个参数，任何能访问 CTL 的人都能建出全盘会话。CTL 只监听
+loopback，所以只对本机成立——但也别把它设成默认，要全权就显式传。
+
+**别指望热加载**：宿主插件改了代码不会自动生效。`@deepseek-ai/dsh-hmr` 在组合里，
+但它是 `disabled: !ctx.get('profileContext')`——只有开发版（有 profileContext）才
+启用，生产 profile 一律关闭。所以**改插件 = 重启**。判断有没有加载新版：
+看 `GET /ctl/health` 的 `version`，或直接打新路由（404 就是没加载）。
 
 ## 6. 两条硬约束
 
