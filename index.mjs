@@ -20,11 +20,14 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 export const name = 'dsh-ctl'
 export const inject = ['webServer', 'sessionController']
 
-export const VERSION = '0.1.3'
+export const VERSION = '0.1.4'
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 /** JSON response helper. */
@@ -271,6 +274,8 @@ export function apply(ctx, config = {}) {
         'GET  /ctl/schedules?sessionId=   (or all=1 for the whole host)',
         'POST /ctl/create   {cwd?, preset?, agentPreset?, sessionId?}   preset pins read-only|workspace-write|danger-full-access',
           'GET  /ctl/presets  available permission presets and the composed default',
+        'GET  /ctl/hypo-checkpoint    sessions opted into dsh-hypo-before-compact',
+        'POST /ctl/hypo-checkpoint  {sessionId, enabled}  opt a session in or out',
         'POST /ctl/prompt   {sessionId, text, mode?}',
         'POST /ctl/cancel   {sessionId}',
         'POST /ctl/rename   {sessionId, title}',
@@ -902,6 +907,93 @@ export function apply(ctx, config = {}) {
       updated: value?.updated === true,
       code: value?.code ?? null,
       schedule: value?.record ? projectSchedule(value.record) : null,
+    })
+  })
+
+  /* ------------------------------------------------------------------ *
+   * Hypomnesis checkpoint allowlist
+   *
+   * dsh-hypo-before-compact serves only sessions that opted in. The file is the
+   * shared contract between three writers — the plugin (reader), its CLI
+   * (`hypo-checkpoint enable --self`, run inside a session), and these routes
+   * (driven from outside). Keeping one format here avoids a second source of
+   * truth; the plugin tolerates a missing file and reloads on mtime change, so a
+   * write through this route takes effect without a restart.
+   *
+   * Shape: {"version":1,"sessions":["session-..."]}
+   */
+  function hypoAllowlistPath() {
+    if (typeof config?.hypoAllowlistFile === 'string' && config.hypoAllowlistFile !== '') {
+      return path.resolve(config.hypoAllowlistFile)
+    }
+    const home =
+      typeof process.env.DSH_HOME === 'string' && process.env.DSH_HOME !== ''
+        ? process.env.DSH_HOME
+        : path.join(os.homedir(), '.dsh')
+    return path.join(home, 'hypo-checkpoint-sessions.json')
+  }
+
+  function readHypoAllowlist(file) {
+    try {
+      const raw = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')
+      const doc = JSON.parse(raw)
+      const list = Array.isArray(doc) ? doc : Array.isArray(doc?.sessions) ? doc.sessions : []
+      return [...new Set(list.filter((id) => typeof id === 'string' && id !== ''))].sort()
+    } catch (err) {
+      if (err?.code === 'ENOENT') return []
+      throw err
+    }
+  }
+
+  function writeHypoAllowlist(file, sessions) {
+    const payload = { version: 1, sessions: [...new Set(sessions)].sort() }
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+    fs.renameSync(tmp, file)
+  }
+
+  route('/ctl/hypo-checkpoint', async (req, res) => {
+    const file = hypoAllowlistPath()
+    if (req.method === 'GET') {
+      let sessions
+      try {
+        sessions = readHypoAllowlist(file)
+      } catch (err) {
+        return send(res, 500, { ok: false, error: String(err?.message ?? err), file })
+      }
+      return send(res, 200, { ok: true, file, count: sessions.length, sessions })
+    }
+    if (!requirePost(req, res)) return
+    const body = await readJson(req)
+    if (typeof body.sessionId !== 'string' || body.sessionId === '') {
+      return send(res, 400, { ok: false, error: 'sessionId is required' })
+    }
+    if (typeof body.enabled !== 'boolean') {
+      return send(res, 400, { ok: false, error: 'enabled must be a boolean' })
+    }
+    let sessions
+    try {
+      sessions = readHypoAllowlist(file)
+    } catch (err) {
+      return send(res, 500, { ok: false, error: String(err?.message ?? err), file })
+    }
+    const before = sessions.includes(body.sessionId)
+    const next = body.enabled ? [...sessions, body.sessionId] : sessions.filter((id) => id !== body.sessionId)
+    if (before !== body.enabled) {
+      try {
+        writeHypoAllowlist(file, next)
+      } catch (err) {
+        return send(res, 500, { ok: false, error: String(err?.message ?? err), file })
+      }
+    }
+    send(res, 200, {
+      ok: true,
+      file,
+      sessionId: body.sessionId,
+      enabled: body.enabled,
+      changed: before !== body.enabled,
+      count: new Set(next).size,
     })
   })
 }
