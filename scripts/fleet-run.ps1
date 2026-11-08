@@ -86,23 +86,17 @@ Write-Host "port: $Port   profile: $Profile"
 # --- 3.5 permission mode ----------------------------------------------------
 # The composed profile derives BOTH the sandbox and the approval policy from
 # DSH_PERMISSION_MODE (the `approval` row maps danger-full-access to policy
-# `never`, anything else to `ask`), and the initial preset is inferred from
-# that pair. A preset is pinned into a session at creation, so this setting
-# only affects sessions created after the restart.
+# `never`, anything else to `ask`), and the initial preset is inferred from that
+# pair. Whatever this is, every session created afterwards inherits it — so this
+# script deliberately does NOT set it: the composed default (workspace-write)
+# stands, and a caller that needs more asks for a preset per session through
+# POST /ctl/create {"preset":"danger-full-access"}.
 #
-# Why the fleet wants full access: the agents it runs are not confined to one
-# workspace. They read a mail vault on D:, a WeChat export on I:, and drive
-# browsers — all outside the boot directory. Under workspace-write those reads
-# are denials, and with policy `ask` nobody is there to approve them in an
-# unattended fleet, so every such call fails closed ("never" means rejected
-# automatically, not auto-approved).
-#
-# Set DSH_PERMISSION_MODE=workspace-write (or read-only) to run a tighter
-# fleet; this default applies only when the variable is unset.
-if (-not $env:DSH_PERMISSION_MODE) {
-    $env:DSH_PERMISSION_MODE = 'danger-full-access'
-}
-Write-Host "permission: $env:DSH_PERMISSION_MODE"
+# Rationale: a fleet-wide default is invisible at the call site, and "full disk
+# access, no approval prompts" is too large a blast radius to grant implicitly.
+# Export DSH_PERMISSION_MODE yourself when you really do want the whole fleet
+# widened; it will still be honoured here.
+Write-Host "permission: $(if ($env:DSH_PERMISSION_MODE) { $env:DSH_PERMISSION_MODE } else { '(unset — composed default)' })"
 
 # dsh treats the invoking directory as the workspace root, and refuses to boot if
 # that directory holds a .env setting DEEPSEEK_BASE_URL ("only the launching

@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto'
 export const name = 'dsh-ctl'
 export const inject = ['webServer', 'sessionController']
 
-export const VERSION = '0.1.2'
+export const VERSION = '0.1.3'
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 /** JSON response helper. */
@@ -269,7 +269,8 @@ export function apply(ctx, config = {}) {
         'GET  /ctl/inspect?id=',
         'GET  /ctl/tail?sessionId=&frames=&ms=',
         'GET  /ctl/schedules?sessionId=   (or all=1 for the whole host)',
-        'POST /ctl/create   {cwd?}',
+        'POST /ctl/create   {cwd?, preset?, agentPreset?, sessionId?}   preset pins read-only|workspace-write|danger-full-access',
+          'GET  /ctl/presets  available permission presets and the composed default',
         'POST /ctl/prompt   {sessionId, text, mode?}',
         'POST /ctl/cancel   {sessionId}',
         'POST /ctl/rename   {sessionId, title}',
@@ -592,7 +593,60 @@ export function apply(ctx, config = {}) {
     if (typeof body.agentPreset === 'string' && body.agentPreset !== '') request.agentPreset = body.agentPreset
     const value = await controller.create(request)
     const sessionId = typeof value?.sessionId === 'string' ? value.sessionId : readId(value)
-    send(res, 200, { ok: true, sessionId, agentPreset: typeof value?.agentPreset === 'string' ? value.agentPreset : null })
+    const payload = {
+      ok: true,
+      sessionId,
+      agentPreset: typeof value?.agentPreset === 'string' ? value.agentPreset : null,
+      preset: null,
+    }
+    // An unknown preset name must fail loudly but must not look like a failed
+    // creation: the session exists either way, and a caller that retries would
+    // leak one session per attempt.
+    if (typeof body.preset === 'string' && body.preset !== '') {
+      try {
+        payload.preset = pinPermission(sessionId, body.preset)
+      } catch (err) {
+        payload.presetError = String(err?.message ?? err)
+      }
+    }
+    send(res, 200, payload)
+  })
+
+  route('/ctl/presets', (req, res) => {
+    const permission = typeof ctx.get === 'function' ? ctx.get('permissionPresets') : undefined
+    if (!permission || typeof permission.resolve !== 'function') {
+      return send(res, 501, {
+        ok: false,
+        error: 'the permission presets service is not mounted in this profile',
+        hint: 'The `permission` row (@deepseek-ai/dsh-permission-presets) ships with the base bundle; a profile that removed it cannot pin presets.',
+      })
+    }
+    let names = []
+    try {
+      names = Array.isArray(permission.names) ? permission.names.slice() : []
+    } catch {
+      names = []
+    }
+    const items = names.map((name) => {
+      try {
+        const spec = permission.resolve(name)
+        return {
+          name,
+          sandbox: typeof spec?.sandbox === 'string' ? spec.sandbox : null,
+          approval: typeof spec?.approval === 'string' ? spec.approval : null,
+          description: typeof spec?.description === 'string' ? spec.description : null,
+        }
+      } catch {
+        return { name, sandbox: null, approval: null, description: null }
+      }
+    })
+    let defaultPreset = null
+    try {
+      if (typeof permission.defaultPreset === 'string') defaultPreset = permission.defaultPreset
+    } catch {
+      defaultPreset = null
+    }
+    send(res, 200, { ok: true, defaultPreset, items })
   })
 
   route('/ctl/prompt', async (req, res) => {
@@ -667,6 +721,45 @@ export function apply(ctx, config = {}) {
       return null
     }
     return svc
+  }
+
+  /**
+   * Pin a permission preset onto a freshly created session.
+   *
+   * The host's `session.create` request accepts only `sessionId`, `cwd` /
+   * `workspaceId` and `agentPreset` — there is no permission field. A preset is
+   * durable once written to the session log, and a fresh session otherwise
+   * inherits whatever the process environment (`DSH_PERMISSION_MODE`) implied at
+   * load time. That is why `/ctl/create` used to always produce a workspace-write
+   * session no matter what the caller wanted.
+   *
+   * We write the same three durable events the permission service writes when a
+   * user switches preset by hand, right after creation:
+   *   permission/preset  — the durable identity `current()`/`derive()` fold
+   *   sandbox/mode       — what the tool runner enforces
+   *   approval/policy    — what the approval service folds on each request
+   *
+   * Writing them here rather than calling `permissionPresets.apply()` is
+   * deliberate: `apply()` needs the live Agent (its third argument mutates the
+   * agent's approval policy), and this route only ever holds a Session.
+   */
+  function pinPermission(sessionId, preset) {
+    const permission = typeof ctx.get === 'function' ? ctx.get('permissionPresets') : undefined
+    if (!permission || typeof permission.resolve !== 'function') {
+      throw new Error(
+        'the permission presets service is not mounted in this profile (expected @deepseek-ai/dsh-permission-presets)',
+      )
+    }
+    const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : undefined
+    const session = sessions && typeof sessions.get === 'function' ? sessions.get(sessionId) : undefined
+    if (!session || typeof session.append !== 'function') {
+      throw new Error(`session "${sessionId}" is not in the live sessions registry yet; the preset was not pinned`)
+    }
+    const spec = permission.resolve(preset) // throws on an unknown preset
+    session.append('permission/preset', { preset })
+    if (typeof spec?.sandbox === 'string') session.append('sandbox/mode', { mode: spec.sandbox })
+    if (typeof spec?.approval === 'string') session.append('approval/policy', { policy: spec.approval })
+    return { preset, sandbox: typeof spec?.sandbox === 'string' ? spec.sandbox : null, approval: typeof spec?.approval === 'string' ? spec.approval : null }
   }
 
   /** Leaf scalars only, same rule as the session projection. */
