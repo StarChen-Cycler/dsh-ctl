@@ -1,6 +1,6 @@
 {
   "name": "dsh-ctl",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Loopback HTTP control plane for a long-running DeepSeek Harness (dsh web) process: list, create, prompt, cancel and tail sessions over SSH.",
   "type": "module",
   "main": "./index.mjs",
