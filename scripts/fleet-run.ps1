@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Launch the DSH fleet profile (web app) on Windows.
 
@@ -91,5 +91,24 @@ Write-Host "port: $Port   profile: $Profile"
 Set-Location $HOME
 
 # --- 4. run ----------------------------------------------------------------
-& $dshPath $Profile --port $Port --no-open
+# dsh prints its launch URL (with a one-time token) to stdout as soon as the
+# server is up, and that token changes on every start. The supervisor redirects
+# stdout into a log file, but that file is truncated on each relaunch — and a
+# failed extra launch can overwrite it before the token line is read, losing the
+# only copy. So tee the stream: pass every line through unchanged, and when the
+# URL appears write it to its own file that a relaunch cannot clobber.
+$urlFile = if ($env:DSH_FLEET_URL_FILE) { $env:DSH_FLEET_URL_FILE } else { Join-Path $HOME 'dsh-fleet.url' }
+
+& $dshPath $Profile --port $Port --no-open 2>&1 | ForEach-Object {
+    $line = [string]$_
+    if ($line -match 'http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+') {
+        try {
+            [IO.File]::WriteAllText($urlFile, $Matches[0], (New-Object Text.UTF8Encoding($false)))
+        } catch {
+            # Never let bookkeeping kill the server.
+        }
+    }
+    $line
+}
+
 exit $LASTEXITCODE
