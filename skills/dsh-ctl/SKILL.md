@@ -290,6 +290,45 @@ loopback，所以只对本机成立——但也别把它设成默认，要全权
 启用，生产 profile 一律关闭。所以**改插件 = 重启**。判断有没有加载新版：
 看 `GET /ctl/health` 的 `version`，或直接打新路由（404 就是没加载）。
 
+### 5.3 记忆检查点的启用范围（hypo-checkpoint）
+
+装了 `dsh-hypo-before-compact` 的机器上，**记忆检查点是按会话选择性开启的**，
+默认全关。这个路由管的就是"哪些会话参与"。
+
+```bash
+# 看名单
+curl -s http://127.0.0.1:17390/ctl/hypo-checkpoint
+
+# 开 / 关
+curl -s -X POST http://127.0.0.1:17390/ctl/hypo-checkpoint \
+  -H 'content-type: application/json' \
+  -d '{"sessionId":"session-…","enabled":true}'
+```
+
+返回里 `changed:false` 表示这次调用没改动任何东西（状态本来就对），重复调用无害。
+
+**为什么是 opt-in 而不是全开**：两种错误的修复成本不对称——污染的记忆库会拖垮检索
+并且要人工清理，而"这次没记"下次开起来就能补。代价是"忘了开 = 没记忆"而且没人会
+告诉你，所以**新建 agent 会话时应当随手开一下**。
+
+**三条写入通道，同一个文件**：
+
+| 通道 | 用法 | 适合谁 |
+|---|---|---|
+| 会话内自举 | `hypo-checkpoint enable --self`（读 `$DSH_SESSION_ID`） | agent 自己，用户说一句就开 |
+| 本路由 | `POST /ctl/hypo-checkpoint` | 你在外面批量管 |
+| 手改文件 | `~/.dsh/hypo-checkpoint-sessions.json` | 兜底 |
+
+文件格式 `{"version":1,"sessions":[…]}`。插件按 mtime 重新读取，所以三种方式都是
+**几秒生效、不用重启**。文件缺失 = 空名单（默认状态，不是错误）；文件损坏 = 沿用上
+一次成功读取的内容——一个拼写错误不该把功能静默全开或全关。
+
+**subagent 不用登记也进不来**：插件读会话头部的 `origin: 'subagent'` 与
+`delegationDepth`，命中就直接跳过。子会话的发现属于父会话的记忆，不该在库里另立碎片。
+
+**一个常见误判**：查这件事的结果时，看 `user/message` 里有没有「记忆检查点」记录，
+不要数事件总数——`agent/inbox/spliced` 和 `user/message` 是同一次注入的两条记录。
+
 ## 6. 两条硬约束
 
 1. **不要高频轮询 `/ctl/control`**：每次调用都会开一个 follow 流并阻塞到 `ms`。

@@ -320,6 +320,56 @@ retry.
 `{ "ok": true, "deleted": true }`, or `deleted: false` with
 `code: "schedule_not_found"`. Queued inbox messages are left intact.
 
+## `GET /ctl/hypo-checkpoint`
+
+Read the allowlist that decides which sessions the
+[`dsh-hypo-before-compact`](https://github.com/StarChen-Cycler/dsh-hypo-before-compact)
+plugin serves. Checkpoints are **opt-in**: a session not listed here gets no
+memory prompts at all.
+
+```json
+{ "ok": true,
+  "file": "C:\\Users\\…\\.dsh\\hypo-checkpoint-sessions.json",
+  "count": 2,
+  "sessions": ["session-…", "session-…"] }
+```
+
+A missing file is reported as `count: 0` — that is the configured default (nothing
+opted in), not an error.
+
+## `POST /ctl/hypo-checkpoint`
+
+```json
+{ "sessionId": "session-…", "enabled": true }
+```
+
+```json
+{ "ok": true, "file": "…", "sessionId": "…",
+  "enabled": true, "changed": true, "count": 2 }
+```
+
+`changed` is `false` when the request matched the current state — the write is
+skipped, so repeated calls are harmless.
+
+**The file is the contract, not this route.** Three writers share it: this route,
+the plugin's own CLI (`hypo-checkpoint enable --self`, run inside a session and
+reading `$DSH_SESSION_ID`), and hand edits. The plugin reloads on mtime change, so
+a write here takes effect within one turn without restarting anything.
+
+Format:
+
+```json
+{ "version": 1, "sessions": ["session-…"] }
+```
+
+Writes go through a temp file and a rename, and the plugin keeps the last good
+read when the file is malformed — a typo must not silently enable or disable
+every session.
+
+**Subagents are excluded by the plugin regardless of this list.** The session
+header carries `origin: 'subagent'` and `delegationDepth`, and a delegated child's
+findings belong to the parent's memory rather than as separate fragments.
+
 ## Error shape
 
 Every failure uses the same envelope:

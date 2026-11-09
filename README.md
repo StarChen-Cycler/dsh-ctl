@@ -166,7 +166,7 @@ claims the message — so `control` (live state) is where you watch them, not `t
 | GET | `/ctl/control?ms=&raw=1` | live queue (`placement`) and running stats |
 | GET | `/ctl/inspect?id=` | durable header + event prefix without activating the agent |
 | GET | `/ctl/tail?sessionId=&frames=&ms=` | history snapshot plus live frames, normalised |
-| POST | `/ctl/create` | `{ cwd?, sessionId?, agentPreset? }` |
+| POST | `/ctl/create` | `{ cwd?, sessionId?, agentPreset?, preset? }` — `preset` pins `read-only`/`workspace-write`/`danger-full-access` |
 | POST | `/ctl/prompt` | `{ sessionId, text, mode?, requestId? }` — `mode`: `queue`/`steer` |
 | POST | `/ctl/cancel` | `{ sessionId }` |
 | POST | `/ctl/rename` | `{ sessionId, title }` |
@@ -174,6 +174,9 @@ claims the message — so `control` (live state) is where you watch them, not `t
 | POST | `/ctl/schedule` | `{ sessionId, title, prompt, daily\|cron\|weekly\|every_seconds\|at\|after_seconds }` — exactly one timing selector |
 | POST | `/ctl/schedule/update` | `{ sessionId, id, title?, prompt?, change? }` |
 | POST | `/ctl/schedule/delete` | `{ sessionId, id }` |
+| GET | `/ctl/hypo-checkpoint` | sessions opted into `dsh-hypo-before-compact` (memory checkpoints) |
+| POST | `/ctl/hypo-checkpoint` | `{ sessionId, enabled }` — opt a session in or out |
+| GET | `/ctl/presets` | permission presets the profile exposes, with their sandbox/approval pair |
 | GET | `/ctl/debug/shape?sessionId=&type=` | read-only schema introspection (see below) |
 
 Full request/response shapes: [docs/API.md](docs/API.md).
